@@ -359,6 +359,59 @@ sudo systemctl status py-frame.service --no-pager
 
 # Troubleshooting
 
+## Fix intermittent WiFi drops by pinning to a specific band (e.g. 2.4GHz)
+
+Symptom: the frame freezes on the last photo with `Drive: DISCONNECTED` in the status
+corner, and the Pi itself stops responding to `ping`/SSH for a while before recovering on
+its own. If your router is dual/tri-band (2.4GHz + 5GHz, sometimes + 6GHz) advertising the
+same SSID on all of them, it band-steers clients between radios -- and if the Pi ends up on
+a higher band with a weak signal at its physical location, it'll flap. Pinning `wpa_supplicant`
+to one specific radio's BSSID (MAC address) stops the router from moving it around.
+
+### 1. Find the BSSID (MAC address) of each band
+
+From the Pi itself, scan for every radio broadcasting your SSID:
+```bash
+sudo iw dev wlan0 scan | grep -E "^BSS|SSID:|freq:|signal:"
+```
+Each result block is one radio/band of your router (same SSID, different `BSS` line = different
+BSSID). `freq: 2412`-`2484` is 2.4GHz, `freq: 5xxx` is 5GHz, `freq: 6xxx` is 6GHz. Note the
+`BSS <mac address>` line for the band you want (2.4GHz has the best range/wall penetration,
+so it's usually the right choice for a stationary device like this frame).
+
+Alternatively, your router's admin UI usually lists a separate BSSID per band on its wireless
+clients/status page -- that's often easier to read than a raw scan.
+
+### 2. Pin `wpa_supplicant` to that BSSID
+
+```bash
+sudo nano /etc/wpa_supplicant/wpa_supplicant.conf
+```
+Add a `bssid` line inside your existing `network={...}` block (leave `ssid`/`psk`/everything
+else as-is):
+```
+network={
+    ssid="YourNetworkName"
+    psk=...
+    bssid=3c:bd:c5:33:67:4a
+    key_mgmt=WPA-PSK
+}
+```
+
+Apply it without a reboot:
+```bash
+sudo wpa_cli -i wlan0 reconfigure
+```
+
+### 3. Verify
+
+```bash
+iw dev wlan0 link
+```
+Confirm `Connected to <the bssid you pinned>`, a frequency in the expected band, and check
+`signal:` -- anything better than about -70 dBm is a solid, stable link. This survives reboots
+since it's read from `wpa_supplicant.conf` at boot.
+
 ```
 dmesg -T | tail -n 100
 watch -n 5 free -h
