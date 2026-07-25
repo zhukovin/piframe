@@ -552,18 +552,86 @@ def blit_scaled(surface: pygame.Surface, img: pygame.Surface, target_rect: pygam
     surface.blit(scaled, (x, y))
 
 
+# Placeholder exclusion-marker icon (a simple "don't show" eye/slash), shown
+# as an overlay over a marked photo instead of a colored border. Path is
+# cwd-relative like the app's other file paths (exclusions_file, etc.) --
+# expected to be run from the repo root, same as everywhere else.
+EXCLUSION_ICON_PATH = "pictures/dont-show-icon.jpeg"
+
+_exclusion_icon_original: Optional[pygame.Surface] = None
+_exclusion_icon_load_attempted = False
+_exclusion_icon_scaled_cache: dict[int, Optional[pygame.Surface]] = {}
+
+
+def _load_exclusion_icon() -> Optional[pygame.Surface]:
+    """
+    Load and cache the exclusion-marker icon once. Returns None (and logs
+    once) if the file is missing/unreadable, so a bad/absent icon file
+    degrades to "no overlay drawn" rather than crashing the render loop.
+    """
+    global _exclusion_icon_original, _exclusion_icon_load_attempted
+    if not _exclusion_icon_load_attempted:
+        _exclusion_icon_load_attempted = True
+        try:
+            icon = pygame.image.load(EXCLUSION_ICON_PATH).convert()
+            # The placeholder icon is black artwork on a flat white
+            # background -- keying out white lets it overlay the photo
+            # instead of covering it with a white square. Approximate for
+            # now (JPEG compression leaves a faint halo); fine for a
+            # placeholder that's getting replaced later.
+            icon.set_colorkey((255, 255, 255))
+            _exclusion_icon_original = icon
+        except Exception:
+            logger.warning(f"Could not load exclusion icon from {EXCLUSION_ICON_PATH!r}", exc_info=True)
+            _exclusion_icon_original = None
+    return _exclusion_icon_original
+
+
+def draw_exclusion_overlay(screen: pygame.Surface, rect: pygame.Rect):
+    """Blit the exclusion-marker icon centered over `rect`, scaled to
+    roughly 40% of its shorter side, preserving the icon's own aspect
+    ratio."""
+    icon = _load_exclusion_icon()
+    if icon is None:
+        return
+
+    target_edge = int(min(rect.width, rect.height) * 0.4)
+    if target_edge <= 0:
+        return
+
+    scaled = _exclusion_icon_scaled_cache.get(target_edge)
+    if scaled is None:
+        iw, ih = icon.get_width(), icon.get_height()
+        if iw <= 0 or ih <= 0:
+            _exclusion_icon_scaled_cache[target_edge] = None
+            return
+        scale = target_edge / max(iw, ih)
+        scaled = smoothscale_safe(icon, (max(1, int(iw * scale)), max(1, int(ih * scale))))
+        # pygame.transform functions don't carry a source surface's
+        # colorkey over to their output, so it has to be re-applied here
+        # (not just on the unscaled original) or the white background
+        # would render as an opaque square instead of showing through.
+        scaled.set_colorkey((255, 255, 255))
+        _exclusion_icon_scaled_cache[target_edge] = scaled
+
+    if scaled is None:
+        return
+
+    x = rect.x + (rect.width - scaled.get_width()) // 2
+    y = rect.y + (rect.height - scaled.get_height()) // 2
+    screen.blit(scaled, (x, y))
+
+
 def draw_slot_overlay(screen: pygame.Surface,
                       rect: pygame.Rect,
                       slot_index: int,
                       marked: bool,
                       font: pygame.font.Font):
-    OLD_PAPER = (235, 222, 193)  # warm beige
-    RED = (255, 64, 64)
     BLACK = (0, 0, 0)
     WHITE = (255, 255, 255)
-    # border color
-    color = RED if marked else OLD_PAPER
-    pygame.draw.rect(screen, color, rect, 3)
+
+    if marked:
+        draw_exclusion_overlay(screen, rect)
 
     # label top-left -- black text with a white outline, no filled
     # background, matching the status overlay's style (see

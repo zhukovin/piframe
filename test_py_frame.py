@@ -30,6 +30,7 @@ from py_frame import (
     blit_scaled,
     build_mirror_fill,
     draw_slot_overlay,
+    draw_exclusion_overlay,
     draw_status_overlay,
     compute_status_box_rect,
     format_speed,
@@ -682,6 +683,113 @@ class TestDrawStatusOverlay:
         actual = draw_status_overlay(screen, self.font, paused=False, drive_ok=True, download_bytes_per_sec=1.0)
 
         assert expected == actual
+
+
+class TestDrawSlotOverlay:
+    """Test suite for draw_slot_overlay: no border is drawn (replaced by
+    an icon overlay for marked slots, see TestDrawExclusionOverlay);
+    only the slot number label is drawn directly by this function."""
+
+    def setup_method(self):
+        pygame.init()
+        pygame.display.set_mode((1, 1))
+        self.font = pygame.font.SysFont(None, 24)
+
+    def teardown_method(self):
+        pygame.quit()
+
+    def test_no_border_drawn_unmarked(self):
+        screen = pygame.Surface((200, 150))
+        screen.fill((10, 20, 30))
+        rect = pygame.Rect(10, 10, 180, 130)
+
+        draw_slot_overlay(screen, rect, 0, marked=False, font=self.font)
+
+        # The rect's edge (where a 3px border used to be drawn) must still
+        # be the plain background color, not a border color.
+        assert screen.get_at((rect.x, rect.centery))[:3] == (10, 20, 30)
+        assert screen.get_at((rect.centerx, rect.y))[:3] == (10, 20, 30)
+
+    def test_no_border_drawn_marked(self):
+        screen = pygame.Surface((200, 150))
+        screen.fill((10, 20, 30))
+        rect = pygame.Rect(10, 10, 180, 130)
+
+        draw_slot_overlay(screen, rect, 0, marked=True, font=self.font)
+
+        assert screen.get_at((rect.x, rect.centery))[:3] == (10, 20, 30)
+        assert screen.get_at((rect.centerx, rect.y))[:3] == (10, 20, 30)
+
+
+class TestDrawExclusionOverlay:
+    """Test suite for draw_exclusion_overlay, the icon shown over a marked
+    photo (pictures/dont-show-icon.jpeg) in place of the old colored
+    border, and for the missing-file fallback."""
+
+    def setup_method(self):
+        pygame.init()
+        pygame.display.set_mode((1, 1))
+
+    def teardown_method(self):
+        pygame.quit()
+        # Reset the module-level icon cache between tests, since it's
+        # normally loaded once for the life of the process.
+        import py_frame
+        py_frame._exclusion_icon_original = None
+        py_frame._exclusion_icon_load_attempted = False
+        py_frame._exclusion_icon_scaled_cache = {}
+
+    def test_draws_something_over_the_rect_center(self):
+        """Test that some non-background pixel shows up near the center
+        of the rect once the (real, repo-provided) icon is drawn"""
+        screen = pygame.Surface((300, 300))
+        screen.fill((10, 20, 30))
+        rect = pygame.Rect(0, 0, 300, 300)
+
+        draw_exclusion_overlay(screen, rect)
+
+        colors = {
+            screen.get_at((x, y))[:3]
+            for x in range(rect.x, rect.right, 4)
+            for y in range(rect.y, rect.bottom, 4)
+        }
+        assert len(colors) > 1, "expected the icon to have drawn something over the background"
+
+    def test_background_still_shows_through_via_colorkey(self):
+        """Test that the icon's white background is keyed out rather than
+        painted as an opaque square over the photo"""
+        screen = pygame.Surface((300, 300))
+        screen.fill((10, 20, 30))
+        rect = pygame.Rect(0, 0, 300, 300)
+
+        draw_exclusion_overlay(screen, rect)
+
+        # Corners of the icon's bounding box are background in the source
+        # artwork (a roughly circular/eye shape) -- background color
+        # should still be visible there, not solid white.
+        corner = screen.get_at((rect.x + 2, rect.y + 2))[:3]
+        assert corner == (10, 20, 30)
+
+    def test_missing_icon_file_does_not_raise(self):
+        import py_frame
+        original_path = py_frame.EXCLUSION_ICON_PATH
+        py_frame.EXCLUSION_ICON_PATH = "pictures/does-not-exist.jpeg"
+        try:
+            screen = pygame.Surface((300, 300))
+            screen.fill((10, 20, 30))
+            rect = pygame.Rect(0, 0, 300, 300)
+
+            draw_exclusion_overlay(screen, rect)  # should not raise
+
+            assert screen.get_at((rect.centerx, rect.centery))[:3] == (10, 20, 30)
+        finally:
+            py_frame.EXCLUSION_ICON_PATH = original_path
+
+    def test_tiny_rect_does_not_raise(self):
+        screen = pygame.Surface((10, 10))
+        rect = pygame.Rect(0, 0, 1, 1)
+
+        draw_exclusion_overlay(screen, rect)  # should not raise
 
 
 class TestComputePatternRects:

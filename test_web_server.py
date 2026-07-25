@@ -328,6 +328,15 @@ class TestWebServer:
 
         assert response.status_code == 400
 
+    def test_api_exclusion_icon_served(self):
+        """Test /api/exclusion-icon serves the placeholder overlay image
+        (pictures/dont-show-icon.jpeg) shown over marked tiles"""
+        response = self.client.get('/api/exclusion-icon')
+
+        assert response.status_code == 200
+        assert response.mimetype == 'image/jpeg'
+        assert len(response.data) > 0
+
     def test_index_page(self):
         """Test that / endpoint returns HTML page"""
         response = self.client.get('/')
@@ -363,6 +372,7 @@ class TestWebServer:
         assert 'sendCommand' in html
         assert 'EventSource' in html
         assert '/api/stream' in html
+        assert '/api/exclusion-icon' in html
 
 
 class TestApiStream:

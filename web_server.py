@@ -2,10 +2,15 @@
 import json
 from typing import TYPE_CHECKING
 
-from flask import Flask, Response, request, jsonify
+from flask import Flask, Response, request, jsonify, send_file
 
 if TYPE_CHECKING:
     from py_frame import SlideshowController  # adjust import
+
+# Must match py_frame.EXCLUSION_ICON_PATH (kept as a separate literal here,
+# rather than importing it, to avoid a circular import with py_frame --
+# py_frame imports run_web from this module at load time).
+EXCLUSION_ICON_PATH = "pictures/dont-show-icon.jpeg"
 
 
 def _parse_int_field(data: dict, key: str, default: int):
@@ -89,6 +94,16 @@ def create_app(controller: "SlideshowController") -> Flask:
             mimetype="image/png",
             headers={"Cache-Control": "max-age=300"},
         )
+
+    @app.route("/api/exclusion-icon")
+    def api_exclusion_icon():
+        # Same placeholder icon drawn over a marked photo on the physical
+        # screen (see draw_exclusion_overlay in py_frame.py), served as-is
+        # for the web UI to overlay on marked tiles too.
+        try:
+            return send_file(EXCLUSION_ICON_PATH, mimetype="image/jpeg")
+        except OSError:
+            return jsonify({"ok": False, "error": "not found"}), 404
 
     @app.route("/api/mark", methods=["POST"])
     def api_mark():
@@ -248,6 +263,16 @@ def create_app(controller: "SlideshowController") -> Flask:
   .tile.marked .badge {
     background: #e63946;
   }
+
+  .tile .exclusion-icon {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 40%;
+    height: auto;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
 </style>
 </head>
 <body>
@@ -355,6 +380,13 @@ function renderState(data) {
     badge.textContent = slide.marked ? 'MARKED' : String(position + 1);
 
     tile.appendChild(img);
+    if (slide.marked) {
+      const icon = document.createElement('img');
+      icon.className = 'exclusion-icon';
+      icon.src = '/api/exclusion-icon';
+      icon.alt = 'marked for exclusion';
+      tile.appendChild(icon);
+    }
     tile.appendChild(badge);
     grid.appendChild(tile);
   });
