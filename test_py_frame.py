@@ -35,6 +35,9 @@ from py_frame import (
     compute_status_box_rect,
     format_speed,
     compute_pattern_rects,
+    _pattern_slide_order,
+    render_pattern,
+    render_single_landscape,
     load_exclusions,
     load_display_config,
     finalize_exclusions,
@@ -59,6 +62,23 @@ class DummySlide(Slide):
         self.path = ""
         self.surface = None  # type: ignore
         self.orientation = orientation
+
+
+def reset_exclusion_icon_cache():
+    """
+    py_frame's exclusion-icon loader caches module-level state meant to
+    persist for the life of the real process (loaded once, never torn
+    down). Tests that pygame.init()/quit() repeatedly across classes need
+    to reset it in setup_method (not just teardown_method) or a later
+    class can inherit a surface tied to an already-torn-down display,
+    which reads back as garbage/blank pixels -- discovered as a flaky
+    failure in TestRenderPatternMarking that only reproduced when run
+    after another class exercising the same icon.
+    """
+    import py_frame
+    py_frame._exclusion_icon_original = None
+    py_frame._exclusion_icon_load_attempted = False
+    py_frame._exclusion_icon_scaled_cache = {}
 
 
 def test_extract_pattern_all_len5():
@@ -693,6 +713,7 @@ class TestDrawSlotOverlay:
     def setup_method(self):
         pygame.init()
         pygame.display.set_mode((1, 1))
+        reset_exclusion_icon_cache()
         self.font = pygame.font.SysFont(None, 24)
 
     def teardown_method(self):
@@ -729,15 +750,10 @@ class TestDrawExclusionOverlay:
     def setup_method(self):
         pygame.init()
         pygame.display.set_mode((1, 1))
+        reset_exclusion_icon_cache()
 
     def teardown_method(self):
         pygame.quit()
-        # Reset the module-level icon cache between tests, since it's
-        # normally loaded once for the life of the process.
-        import py_frame
-        py_frame._exclusion_icon_original = None
-        py_frame._exclusion_icon_load_attempted = False
-        py_frame._exclusion_icon_scaled_cache = {}
 
     def test_draws_something_over_the_rect_center(self):
         """Test that some non-background pixel shows up near the center
@@ -846,9 +862,148 @@ class TestComputePatternRects:
             self.landscape_slide, self.landscape_slide, self.landscape_slide
         ]
         rects = compute_pattern_rects(self.screen, slides, pattern_type=3)
-        
+
         # Should have 4 rects
         assert len(rects) == 4
+
+
+class TestPatternSlideOrder:
+    """Test suite for _pattern_slide_order: must match the order
+    compute_pattern_rects actually assigns slides to rects, since
+    render_pattern relies on the two staying in sync to attribute marks
+    to the correct rect (see TestRenderPatternMarking for the regression
+    this guards against)."""
+
+    def setup_method(self):
+        pygame.init()
+        self.screen = pygame.Surface((900, 600))
+
+    def teardown_method(self):
+        pygame.quit()
+
+    def _slide(self, path, orientation):
+        size = (100, 200) if orientation == "P" else (200, 100)
+        return Slide(path=path, surface=pygame.Surface(size), orientation=orientation)
+
+    def test_matches_compute_pattern_rects_order_type_1(self):
+        slides = [self._slide(f"s{i}.jpg", "P") for i in range(3)]
+        rects = compute_pattern_rects(self.screen, slides, pattern_type=1)
+        ordered = _pattern_slide_order(slides, pattern_type=1)
+
+        assert [s.surface for s in ordered] == [surf for surf, _ in rects]
+
+    def test_matches_compute_pattern_rects_order_type_2(self):
+        # Deliberately interleaved/raw order, not grouped by orientation --
+        # this is what current_slides actually looks like in production.
+        slides = [
+            self._slide("p1.jpg", "P"), self._slide("l1.jpg", "L"),
+            self._slide("p2.jpg", "P"), self._slide("l2.jpg", "L"),
+            self._slide("l3.jpg", "L"),
+        ]
+        rects = compute_pattern_rects(self.screen, slides, pattern_type=2)
+        ordered = _pattern_slide_order(slides, pattern_type=2)
+
+        assert [s.surface for s in ordered] == [surf for surf, _ in rects]
+        assert [s.path for s in ordered] == ["l1.jpg", "l2.jpg", "l3.jpg", "p1.jpg", "p2.jpg"]
+
+    def test_matches_compute_pattern_rects_order_type_3(self):
+        slides = [
+            self._slide("l1.jpg", "L"), self._slide("p1.jpg", "P"),
+            self._slide("l2.jpg", "L"), self._slide("l3.jpg", "L"),
+        ]
+        rects = compute_pattern_rects(self.screen, slides, pattern_type=3)
+        ordered = _pattern_slide_order(slides, pattern_type=3)
+
+        assert [s.surface for s in ordered] == [surf for surf, _ in rects]
+        assert [s.path for s in ordered] == ["p1.jpg", "l1.jpg", "l2.jpg", "l3.jpg"]
+
+
+class TestRenderPatternMarking:
+    """Regression tests for a bug where clicking thumbnail N in the web UI
+    highlighted a DIFFERENT photo on the physical screen for the PPLLL/
+    PLLL patterns. Root cause: render_pattern checked `idx in marks`
+    where idx was the rect's position (compute_pattern_rects groups by
+    orientation) but marks held current_slides indices (raw order) --
+    two different orderings for these pattern types. Fixed by keying
+    marks by path instead of index."""
+
+    def setup_method(self):
+        pygame.init()
+        pygame.display.set_mode((1, 1))
+        reset_exclusion_icon_cache()
+        self.screen = pygame.Surface((900, 600))
+        self.font = pygame.font.SysFont(None, 24)
+
+    def teardown_method(self):
+        pygame.quit()
+
+    def _slide(self, path, orientation, color):
+        size = (100, 200) if orientation == "P" else (200, 100)
+        surf = pygame.Surface(size)
+        surf.fill(color)
+        return Slide(path=path, surface=surf, orientation=orientation)
+
+    @staticmethod
+    def _colors_near_center(screen, rect, radius=16, step=4):
+        # draw_slot_overlay always draws a slot-number label in the rect's
+        # top-left corner regardless of marked state, so sampling the
+        # whole rect would show >1 color either way -- sample only a
+        # small window around the center, which the label never reaches
+        # but the (40%-of-min-dimension) exclusion icon always does.
+        return {
+            screen.get_at((x, y))[:3]
+            for x in range(rect.centerx - radius, rect.centerx + radius, step)
+            for y in range(rect.centery - radius, rect.centery + radius, step)
+        }
+
+    def test_mark_highlights_the_correct_rect_pplll(self):
+        # Raw current_slides order: interleaved, NOT grouped by
+        # orientation -- this is what production actually looks like.
+        p1 = self._slide("p1.jpg", "P", (10, 10, 10))
+        l1 = self._slide("l1.jpg", "L", (20, 20, 20))
+        p2 = self._slide("p2.jpg", "P", (30, 30, 30))
+        l2 = self._slide("l2.jpg", "L", (40, 40, 40))
+        l3 = self._slide("l3.jpg", "L", (50, 50, 50))
+        slides = [p1, l1, p2, l2, l3]
+
+        rects = compute_pattern_rects(self.screen, slides, pattern_type=2)
+        p2_rect = next(rect for surf, rect in rects if surf is p2.surface)
+
+        render_pattern(self.screen, slides, pattern_type=2, background=None,
+                        font=self.font, marks={"p2.jpg"})
+
+        colors_at_p2 = self._colors_near_center(self.screen, p2_rect)
+        assert len(colors_at_p2) > 1, "expected the exclusion icon over the marked photo's rect"
+
+        for surf, rect in rects:
+            if surf is p2.surface:
+                continue
+            actual = self.screen.get_at((rect.centerx, rect.centery))[:3]
+            expected = surf.get_at((0, 0))[:3]
+            assert actual == expected, f"icon incorrectly drawn on unmarked rect {rect}"
+
+    def test_mark_highlights_the_correct_rect_plll(self):
+        l1 = self._slide("l1.jpg", "L", (20, 20, 20))
+        p1 = self._slide("p1.jpg", "P", (30, 30, 30))
+        l2 = self._slide("l2.jpg", "L", (40, 40, 40))
+        l3 = self._slide("l3.jpg", "L", (50, 50, 50))
+        slides = [l1, p1, l2, l3]
+
+        rects = compute_pattern_rects(self.screen, slides, pattern_type=3)
+        l3_rect = next(rect for surf, rect in rects if surf is l3.surface)
+
+        render_pattern(self.screen, slides, pattern_type=3, background=None,
+                        font=self.font, marks={"l3.jpg"})
+
+        colors_at_l3 = self._colors_near_center(self.screen, l3_rect)
+        assert len(colors_at_l3) > 1, "expected the exclusion icon over the marked photo's rect"
+
+        for surf, rect in rects:
+            if surf is l3.surface:
+                continue
+            actual = self.screen.get_at((rect.centerx, rect.centery))[:3]
+            expected = surf.get_at((0, 0))[:3]
+            assert actual == expected, f"icon incorrectly drawn on unmarked rect {rect}"
 
 
 class TestLoadExclusions:

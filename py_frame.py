@@ -885,7 +885,7 @@ def render_single_landscape(screen: pygame.Surface,
                             slide: Slide,
                             background: Optional[pygame.Surface],
                             font: pygame.font.Font,
-                            marks: set[int]):
+                            marks: set[str]):
     if background is not None:
         screen.blit(background, (0, 0))
     else:
@@ -895,7 +895,35 @@ def render_single_landscape(screen: pygame.Surface,
     blit_scaled(screen, slide.surface, rect)
 
     # slot index 0 always
-    draw_slot_overlay(screen, rect, 0, (0 in marks), font)
+    draw_slot_overlay(screen, rect, 0, (slide.path in marks), font)
+
+
+def _pattern_slide_order(slides: List[Slide], pattern_type: int) -> List[Slide]:
+    """
+    The order compute_pattern_rects assigns slides to the rects it
+    builds. Type 1 (PPP) keeps slides in their original order; types 2
+    (PPLLL) and 3 (PLLL) group by orientation (all L's, in original
+    relative order, then all P's) before laying out columns -- NOT the
+    same order as `slides` itself. render_pattern uses this to correctly
+    attribute a mark (keyed by path) to the rect actually drawing that
+    photo, rather than assuming rects[i] corresponds to slides[i], which
+    is only true for pattern_type 0/1.
+    """
+    if pattern_type == 1:
+        return list(slides[:3])
+
+    Ls = [s for s in slides if s.orientation == "L"]
+    Ps = [s for s in slides if s.orientation == "P"]
+
+    if pattern_type == 2:
+        return Ls[:3] + Ps[:2]
+
+    if pattern_type == 3:
+        if not Ps or not Ls:
+            return []
+        return [Ps[0]] + Ls[:3]
+
+    return []
 
 
 def compute_pattern_rects(screen: pygame.Surface, slides: List[Slide], pattern_type: int) -> List[
@@ -967,17 +995,22 @@ def render_pattern(screen: pygame.Surface,
                    pattern_type: int,
                    background: Optional[pygame.Surface],
                    font: pygame.font.Font,
-                   marks: set[int]):
+                   marks: set[str]):
     if background is not None:
         screen.blit(background, (0, 0))
     else:
         screen.fill((0, 0, 0))
 
     rects = compute_pattern_rects(screen, slides, pattern_type)
-    # print("marks", marks)
+    # rects[i] doesn't correspond to slides[i] for pattern_type 2/3 (see
+    # _pattern_slide_order) -- look up each rect's actual photo by
+    # position in that same order, so marks (keyed by path) land on the
+    # correct rect instead of an arbitrary one.
+    ordered_slides = _pattern_slide_order(slides, pattern_type)
     for idx, (surf, rect) in enumerate(rects):
         blit_scaled(screen, surf, rect)
-        draw_slot_overlay(screen, rect, idx, (idx in marks), font)
+        marked = idx < len(ordered_slides) and ordered_slides[idx].path in marks
+        draw_slot_overlay(screen, rect, idx, marked, font)
 
 
 def load_exclusions(controller: SlideshowController):
@@ -1564,10 +1597,7 @@ def render_loop(
             else:
                 if current_slides and current_pattern_type is not None:
                     with controller.lock:
-                        marks_copy = {
-                            i for i, s in enumerate(current_slides)
-                            if s.path in controller.pending_exclusions
-                        }
+                        marks_copy = set(controller.pending_exclusions)
 
                     if current_pattern_type == 0:
                         render_single_landscape(
