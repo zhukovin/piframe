@@ -1224,17 +1224,28 @@ def build_thumbnail_bytes(surface: pygame.Surface, width: int = THUMBNAIL_WIDTH)
     return buf.getvalue()
 
 
-def update_thumbnail_cache(controller: SlideshowController, slides: list[Slide]):
+def update_thumbnail_cache(controller: SlideshowController, slides: list[Slide],
+                            max_to_generate: Optional[int] = None):
     """
     Generate and cache a thumbnail for any of `slides` not already in
     controller.thumbnail_cache, then drop cached entries for paths no
     longer reachable via current_slides or history, so the cache stays
-    small over a long-running slideshow. Called from render_loop right
-    after a new screen is chosen.
+    small over a long-running slideshow.
+
+    `max_to_generate` caps how many NEW thumbnails this call will
+    generate (None = unlimited). render_loop calls this every iteration
+    with a small cap so a multi-photo screen's thumbnails fill in
+    gradually across iterations instead of blocking the loop -- and with
+    it, responsiveness to pause/mark/next/prev -- for however long a full
+    batch takes on slower hardware (observed live: 2-3s for a 5-photo
+    screen on a Pi 3B, during which a fresh mark's pause request sat
+    unprocessed).
     """
     with controller.lock:
         already_cached = set(controller.thumbnail_cache)
     to_generate = [s for s in slides if s.path not in already_cached]
+    if max_to_generate is not None:
+        to_generate = to_generate[:max_to_generate]
 
     new_thumbs: dict[str, bytes] = {}
     for s in to_generate:
@@ -1402,6 +1413,14 @@ def render_loop(
                 paused = False
                 set_hdmi_power(True)
 
+        # Fill in the current screen's thumbnails a little at a time, one
+        # per iteration, rather than as one blocking batch when the screen
+        # first appears -- keeps the loop responsive to pause/mark/next/
+        # prev even while a multi-photo screen's thumbnails are still
+        # being generated (see update_thumbnail_cache's docstring).
+        if current_slides:
+            update_thumbnail_cache(controller, current_slides, max_to_generate=1)
+
         # --- Decide if slideshow should advance ---
         need_advance = False
         backward = False
@@ -1484,7 +1503,6 @@ def render_loop(
                         screen.get_size(), rects
                     )
                     current_end_time = now + seconds_to_display
-                    update_thumbnail_cache(controller, current_slides)
 
                     with controller.lock:
                         controller.current_slides = current_slides
@@ -1580,7 +1598,6 @@ def render_loop(
                             screen.get_size(), rects
                         )
                         current_end_time = now + seconds_to_display
-                        update_thumbnail_cache(controller, current_slides)
 
                         with controller.lock:
                             controller.current_slides = current_slides

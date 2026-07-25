@@ -1371,6 +1371,27 @@ class TestUpdateThumbnailCache:
 
         assert self.controller.thumbnail_cache["old.jpg"] == b"still-good"
 
+    def test_max_to_generate_caps_work_done_per_call(self):
+        """Regression test: render_loop used to generate a whole screen's
+        thumbnails in one blocking batch, freezing pause/mark/next/prev
+        responsiveness for however long that took (observed live: 2-3s
+        for 5 photos on a Pi 3B). max_to_generate lets render_loop spread
+        that work across iterations instead -- one call should only ever
+        produce up to that many new entries."""
+        slides = [self._slide(f"s{i}.jpg") for i in range(5)]
+
+        update_thumbnail_cache(self.controller, slides, max_to_generate=1)
+        assert len(self.controller.thumbnail_cache) == 1
+
+        update_thumbnail_cache(self.controller, slides, max_to_generate=1)
+        assert len(self.controller.thumbnail_cache) == 2
+
+        # Repeated calls progressively finish the rest.
+        update_thumbnail_cache(self.controller, slides, max_to_generate=1)
+        update_thumbnail_cache(self.controller, slides, max_to_generate=1)
+        update_thumbnail_cache(self.controller, slides, max_to_generate=1)
+        assert set(self.controller.thumbnail_cache) == {s.path for s in slides}
+
 
 class TestSetHdmiPower:
     """Test suite for set_hdmi_power, which cuts/restores the physical HDMI

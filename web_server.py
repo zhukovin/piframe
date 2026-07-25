@@ -333,6 +333,22 @@ function layoutTiles(slides, patternType) {
   return { columns: 3, rows: 2, tiles };
 }
 
+const THUMB_RETRY_DELAY_MS = 500;
+const THUMB_RETRY_MAX_ATTEMPTS = 8;  // ~4s -- render_loop fills in one new thumbnail per iteration
+
+// render_loop generates a new screen's thumbnails gradually (one per
+// iteration) rather than all at once, so a photo that just appeared may
+// not have a cached thumbnail yet. Retry on load failure instead of
+// leaving a permanently broken image icon.
+function setThumbSrcWithRetry(img, path, attempt) {
+  attempt = attempt || 0;
+  img.onerror = () => {
+    if (attempt >= THUMB_RETRY_MAX_ATTEMPTS) return;
+    setTimeout(() => setThumbSrcWithRetry(img, path, attempt + 1), THUMB_RETRY_DELAY_MS);
+  };
+  img.src = '/api/thumbnail?path=' + encodeURIComponent(path) + '&attempt=' + attempt;
+}
+
 function renderState(data) {
   latestVersion = data.version;
   latestPaused = data.paused;
@@ -372,8 +388,8 @@ function renderState(data) {
     const img = document.createElement('img');
     img.className = 'thumb';
     img.loading = 'lazy';
-    img.src = '/api/thumbnail?path=' + encodeURIComponent(slide.path);
     img.alt = '';
+    setThumbSrcWithRetry(img, slide.path);
 
     const badge = document.createElement('div');
     badge.className = 'badge';
