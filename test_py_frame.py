@@ -160,6 +160,8 @@ class TestSlideshowController:
         assert controller.measurements_file == "load_measurements.csv"
         assert controller.state_version == 0
         assert controller.thumbnail_cache == {}
+        assert controller.current_end_time == 0.0
+        assert controller.seconds_to_display == 15
 
     def test_pending_exclusions_management(self):
         """Test marking and unmarking paths as pending exclusion"""

@@ -3,6 +3,7 @@ Comprehensive test suite for web_server.py
 Tests for Flask web interface and API endpoints
 """
 import json
+import time
 import pytest
 import pygame
 from web_server import create_app, _parse_int_field, build_state_payload
@@ -372,6 +373,8 @@ class TestWebServer:
         assert 'sendCommand' in html
         assert 'EventSource' in html
         assert '/api/stream' in html
+        assert 'tickAdvanceBar' in html
+        assert 'advance-bar-fill' in html
         assert '/api/exclusion-icon' in html
 
 
@@ -438,7 +441,46 @@ class TestBuildStatePayload:
         with self.controller.lock:
             payload = build_state_payload(self.controller)
 
-        assert set(payload.keys()) == {"slides", "paused", "black", "version"}
+        assert set(payload.keys()) == {
+            "slides", "paused", "black", "version",
+            "seconds_remaining", "seconds_per_screen",
+        }
+
+    def test_seconds_remaining_reflects_current_end_time(self):
+        self.controller.current_end_time = time.time() + 7.0
+        self.controller.seconds_to_display = 15
+
+        with self.controller.lock:
+            payload = build_state_payload(self.controller)
+
+        assert 6.0 < payload["seconds_remaining"] <= 7.0
+        assert payload["seconds_per_screen"] == 15
+
+    def test_seconds_remaining_clamped_to_zero_when_overdue(self):
+        self.controller.current_end_time = time.time() - 100.0
+
+        with self.controller.lock:
+            payload = build_state_payload(self.controller)
+
+        assert payload["seconds_remaining"] == 0.0
+
+    def test_seconds_remaining_none_when_paused(self):
+        self.controller.current_end_time = time.time() + 7.0
+        self.controller.paused = True
+
+        with self.controller.lock:
+            payload = build_state_payload(self.controller)
+
+        assert payload["seconds_remaining"] is None
+
+    def test_seconds_remaining_none_when_black_screen(self):
+        self.controller.current_end_time = time.time() + 7.0
+        self.controller.black_screen = True
+
+        with self.controller.lock:
+            payload = build_state_payload(self.controller)
+
+        assert payload["seconds_remaining"] is None
 
 
 class TestParseIntField:

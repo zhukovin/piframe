@@ -1,5 +1,6 @@
 # web_server.py
 import json
+import time
 from typing import TYPE_CHECKING
 
 from flask import Flask, Response, request, jsonify, send_file
@@ -41,11 +42,19 @@ def build_state_payload(controller: "SlideshowController") -> dict:
         }
         for i, s in enumerate(controller.current_slides)
     ]
+    if controller.paused or controller.black_screen:
+        # No advance is pending -- nothing for the client to count down to.
+        seconds_remaining = None
+    else:
+        seconds_remaining = round(max(0.0, controller.current_end_time - time.time()), 1)
+
     return {
         "slides": slides,
         "paused": controller.paused,
         "black": controller.black_screen,
         "version": controller.state_version,
+        "seconds_remaining": seconds_remaining,
+        "seconds_per_screen": controller.seconds_to_display,
     }
 
 
@@ -221,6 +230,25 @@ def create_app(controller: "SlideshowController") -> Flask:
     color: #c0392b;
   }
 
+  #advance-bar-track {
+    height: 6px;
+    border-radius: 3px;
+    background: #e0e0e0;
+    overflow: hidden;
+    margin: 4px 0 14px 0;
+  }
+
+  #advance-bar-track.hidden {
+    visibility: hidden;
+  }
+
+  #advance-bar-fill {
+    height: 100%;
+    width: 100%;
+    background: #2c7be5;
+    transition: width 0.2s linear;
+  }
+
   .pattern-grid {
     display: grid;
     gap: 4px;
@@ -285,12 +313,38 @@ def create_app(controller: "SlideshowController") -> Flask:
       <button id="btn-screen" class="wide">Screen Off</button>
     </div>
   <div id="status"></div>
+  <div id="advance-bar-track"><div id="advance-bar-fill"></div></div>
   <div id="slots"></div>
 
 <script>
 let latestVersion = 0;
 let latestPaused = false;
 let latestBlack = false;
+
+// Advance countdown/progress bar. SSE pushes are event-driven (only sent
+// on real state changes, roughly once per screen), not a steady per-
+// second tick -- so instead of relying on push frequency, we compute a
+// local deadline once per push (from Date.now(), no server clock sync
+// needed) and animate smoothly between pushes with our own interval.
+let advanceDeadlineMs = null;   // Date.now()-based ms timestamp, or null if no countdown
+let advanceTotalSeconds = 15;
+
+function tickAdvanceBar() {
+  const track = document.getElementById('advance-bar-track');
+  const fill = document.getElementById('advance-bar-fill');
+  if (advanceDeadlineMs === null) {
+    track.classList.add('hidden');
+    return;
+  }
+  track.classList.remove('hidden');
+  const remainingMs = Math.max(0, advanceDeadlineMs - Date.now());
+  const fraction = advanceTotalSeconds > 0
+    ? Math.min(1, remainingMs / (advanceTotalSeconds * 1000))
+    : 0;
+  fill.style.width = (fraction * 100) + '%';
+}
+
+setInterval(tickAdvanceBar, 200);
 
 // Mirrors compute_pattern_rects() in py_frame.py so the web UI grid
 // matches the physical screen's arrangement: which columns/rows each
@@ -353,6 +407,14 @@ function renderState(data) {
   latestVersion = data.version;
   latestPaused = data.paused;
   latestBlack = data.black;
+
+  if (data.seconds_remaining === null || data.seconds_remaining === undefined) {
+    advanceDeadlineMs = null;
+  } else {
+    advanceDeadlineMs = Date.now() + data.seconds_remaining * 1000;
+    advanceTotalSeconds = data.seconds_per_screen;
+  }
+  tickAdvanceBar();
 
   const slotsDiv = document.getElementById('slots');
   const statusDiv = document.getElementById('status');

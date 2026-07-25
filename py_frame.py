@@ -157,6 +157,13 @@ class SlideshowController:
         # calls ever happen off the render thread.
         self.thumbnail_cache: dict[str, bytes] = {}
 
+        # Wall-clock time.time() at which the current screen will
+        # auto-advance, and how many seconds each screen gets -- published
+        # by render_loop so the web UI can show a countdown/progress bar.
+        # Not meaningful while paused/black_screen (no advance pending).
+        self.current_end_time: float = 0.0
+        self.seconds_to_display: int = 15
+
     def bump_version(self):
         """
         Must be called while holding self.lock. Marks /api/state-visible
@@ -1277,6 +1284,8 @@ def render_loop(
     import os
     import platform
 
+    controller.seconds_to_display = seconds_to_display
+
     # Must set env var BEFORE pygame.init()
     if platform.system() == "Darwin":  # macOS
         # Put window at top-left of primary display
@@ -1507,6 +1516,7 @@ def render_loop(
                     with controller.lock:
                         controller.current_slides = current_slides
                         controller.current_pattern_type = current_pattern_type
+                        controller.current_end_time = current_end_time
                         controller.bump_version()
 
                 need_to_render = True
@@ -1602,6 +1612,7 @@ def render_loop(
                         with controller.lock:
                             controller.current_slides = current_slides
                             controller.current_pattern_type = current_pattern_type
+                            controller.current_end_time = current_end_time
                             controller.bump_version()
 
         # --- Render only when needed ---
