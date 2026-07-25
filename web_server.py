@@ -36,6 +36,7 @@ def build_state_payload(controller: "SlideshowController") -> dict:
         {
             "index": i,
             "path": s.path,
+            "orientation": s.orientation,
             "marked": s.path in controller.pending_exclusions,
             "pattern_type": controller.current_pattern_type,
         }
@@ -96,25 +97,29 @@ def create_app(controller: "SlideshowController") -> Flask:
         if not path:
             return jsonify({"ok": False, "error": "missing path"}), 400
 
+        # Only the lookup needs the lock; the transform/encode below is
+        # CPU-bound and must not hold up render_loop, which also takes
+        # controller.lock every iteration.
         with controller.lock:
             surface = _find_slide_surface(controller, path)
-            if surface is not None:
-                w, h = surface.get_width(), surface.get_height()
-                if w > 0 and h > 0:
-                    scale = THUMBNAIL_WIDTH / w
-                    thumb = pygame.transform.smoothscale(
-                        surface, (THUMBNAIL_WIDTH, max(1, round(h * scale)))
-                    )
-                else:
-                    thumb = None
-            else:
-                thumb = None
 
-        if thumb is None:
+        if surface is None or surface.get_width() <= 0 or surface.get_height() <= 0:
             return jsonify({"ok": False, "error": "not found"}), 404
 
-        buf = io.BytesIO()
-        pygame.image.save(thumb, buf, "thumb.png")
+        try:
+            w, h = surface.get_width(), surface.get_height()
+            scale = THUMBNAIL_WIDTH / w
+            thumb = pygame.transform.smoothscale(surface, (THUMBNAIL_WIDTH, max(1, round(h * scale))))
+            buf = io.BytesIO()
+            pygame.image.save(thumb, buf, "thumb.png")
+        except Exception:
+            # Logged (propagates to the same app_errors.log/journal as the
+            # rest of the app) rather than left as a silent broken-image
+            # icon in the browser -- this is the one spot most likely to
+            # hit an environment-specific pygame/SDL issue on the Pi.
+            app.logger.exception(f"Failed to build thumbnail for {path!r}")
+            return jsonify({"ok": False, "error": "render failed"}), 500
+
         return Response(
             buf.getvalue(),
             mimetype="image/png",
@@ -234,31 +239,47 @@ def create_app(controller: "SlideshowController") -> Flask:
     color: #c0392b;
   }
 
-  .slot {
-    border: 1px solid #ccc;
-    padding: 8px;
-    margin-bottom: 8px;
-    border-radius: 6px;
+  .pattern-grid {
+    display: grid;
+    gap: 4px;
+    aspect-ratio: 16 / 9;
+    margin-bottom: 12px;
   }
 
-  .slot.marked {
-    border-color: red;
-    background: #ffecec;
+  .tile {
+    position: relative;
+    overflow: hidden;
+    border-radius: 4px;
+    border: 3px solid transparent;
+    cursor: pointer;
+    background: #222;
   }
 
-  .thumb {
+  .tile.marked {
+    border-color: #e63946;
+  }
+
+  .tile .thumb {
     display: block;
     width: 100%;
-    max-width: 220px;
-    border-radius: 4px;
-    margin: 6px 0;
+    height: 100%;
+    object-fit: cover;
   }
 
-  .path {
+  .tile .badge {
+    position: absolute;
+    bottom: 4px;
+    right: 4px;
+    background: rgba(0, 0, 0, 0.6);
+    color: white;
     font-size: 11px;
-    color: #666;
-    word-break: break-all;
-    margin-bottom: 6px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    pointer-events: none;
+  }
+
+  .tile.marked .badge {
+    background: #e63946;
   }
 </style>
 </head>
@@ -279,6 +300,47 @@ let latestVersion = 0;
 let latestPaused = false;
 let latestBlack = false;
 
+// Mirrors compute_pattern_rects() in py_frame.py so the web UI grid
+// matches the physical screen's arrangement: which columns/rows each
+// slide occupies for a given pattern_type. pattern_type 2/3 group
+// slides by orientation (all L's, then all P's) rather than using
+// slides in their original order.
+function layoutTiles(slides, patternType) {
+  if (patternType !== 1 && patternType !== 2 && patternType !== 3) {
+    // Solo landscape (0), empty, or anything unrecognized: one big tile.
+    const tiles = slides.slice(0, 1).map(slide => ({ slide, col: '1', row: '1' }));
+    return { columns: 1, rows: 1, tiles };
+  }
+
+  if (patternType === 1) {
+    // PPP: 3 equal columns, original order, single row.
+    const tiles = slides.slice(0, 3).map((slide, i) => ({ slide, col: String(i + 1), row: '1' }));
+    return { columns: 3, rows: 1, tiles };
+  }
+
+  const Ls = slides.filter(s => s.orientation === 'L');
+  const Ps = slides.filter(s => s.orientation === 'P');
+  const tiles = [];
+
+  if (patternType === 2) {
+    // PPLLL: column 1 = 3 L's stacked; columns 2 & 3 = P's, full height.
+    for (let i = 0; i < Math.min(3, Ls.length); i++) {
+      tiles.push({ slide: Ls[i], col: '1', row: String(i + 1) });
+    }
+    if (Ps.length >= 1) tiles.push({ slide: Ps[0], col: '2', row: '1 / span 3' });
+    if (Ps.length >= 2) tiles.push({ slide: Ps[1], col: '3', row: '1 / span 3' });
+    return { columns: 3, rows: 3, tiles };
+  }
+
+  // PLLL: column 3 = P full height; top L spans columns 1-2; bottom two
+  // L's split columns 1 and 2 in the bottom row.
+  if (Ps.length >= 1) tiles.push({ slide: Ps[0], col: '3', row: '1 / span 2' });
+  if (Ls.length >= 1) tiles.push({ slide: Ls[0], col: '1 / span 2', row: '1' });
+  if (Ls.length >= 2) tiles.push({ slide: Ls[1], col: '1', row: '2' });
+  if (Ls.length >= 3) tiles.push({ slide: Ls[2], col: '2', row: '2' });
+  return { columns: 3, rows: 2, tiles };
+}
+
 function renderState(data) {
   latestVersion = data.version;
   latestPaused = data.paused;
@@ -294,15 +356,21 @@ function renderState(data) {
   document.getElementById('btn-playpause').textContent = data.paused ? 'Play' : 'Pause';
   document.getElementById('btn-screen').textContent = data.black ? 'Screen On' : 'Screen Off';
 
-  slotsDiv.innerHTML = '';
-  data.slides.forEach(slide => {
-    const div = document.createElement('div');
-    div.className = 'slot' + (slide.marked ? ' marked' : '');
+  const patternType = data.slides.length > 0 ? data.slides[0].pattern_type : null;
+  const layout = layoutTiles(data.slides, patternType);
 
-    const label = document.createElement('div');
-    const b = document.createElement('b');
-    b.textContent = 'Slot ' + (slide.index + 1);
-    label.appendChild(b);
+  const grid = document.createElement('div');
+  grid.className = 'pattern-grid';
+  grid.style.gridTemplateColumns = `repeat(${layout.columns}, 1fr)`;
+  grid.style.gridTemplateRows = `repeat(${layout.rows}, 1fr)`;
+
+  layout.tiles.forEach(({ slide, col, row }) => {
+    const tile = document.createElement('div');
+    tile.className = 'tile' + (slide.marked ? ' marked' : '');
+    tile.style.gridColumn = col;
+    tile.style.gridRow = row;
+    tile.title = slide.path;
+    tile.onclick = () => toggleMark(slide.index, slide.path);
 
     const img = document.createElement('img');
     img.className = 'thumb';
@@ -310,20 +378,17 @@ function renderState(data) {
     img.src = '/api/thumbnail?path=' + encodeURIComponent(slide.path);
     img.alt = '';
 
-    const pathDiv = document.createElement('div');
-    pathDiv.className = 'path';
-    pathDiv.textContent = slide.path;
+    const badge = document.createElement('div');
+    badge.className = 'badge';
+    badge.textContent = slide.marked ? 'MARKED' : String(slide.index + 1);
 
-    const btn = document.createElement('button');
-    btn.textContent = slide.marked ? 'Unmark' : 'Mark';
-    btn.onclick = () => toggleMark(slide.index, slide.path);
-
-    div.appendChild(label);
-    div.appendChild(img);
-    div.appendChild(pathDiv);
-    div.appendChild(btn);
-    slotsDiv.appendChild(div);
+    tile.appendChild(img);
+    tile.appendChild(badge);
+    grid.appendChild(tile);
   });
+
+  slotsDiv.innerHTML = '';
+  slotsDiv.appendChild(grid);
 }
 
 function flashStatus(message) {

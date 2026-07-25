@@ -71,8 +71,10 @@ class TestWebServer:
         assert len(data['slides']) == 2
         assert data['slides'][0]['path'] == "test1.jpg"
         assert data['slides'][0]['marked'] is True
+        assert data['slides'][0]['orientation'] == "L"
         assert data['slides'][1]['path'] == "test2.jpg"
         assert data['slides'][1]['marked'] is False
+        assert data['slides'][1]['orientation'] == "P"
         assert data['slides'][0]['pattern_type'] == 1
 
     def test_api_state_paused(self):
