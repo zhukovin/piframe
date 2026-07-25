@@ -34,9 +34,8 @@ from py_frame import (
     format_speed,
     compute_pattern_rects,
     load_exclusions,
-    load_settings,
+    load_display_config,
     finalize_exclusions,
-    reclassify_pattern_type,
     downscale_slide_to_screen,
     downscale_slides_to_screen,
     read_file_list,
@@ -124,35 +123,58 @@ class TestSlideshowController:
         
         assert controller.current_slides == []
         assert controller.current_pattern_type is None
-        assert controller.current_marks == set()
         assert controller.history == []
         assert controller.history_index == -1
         assert controller.pending_command is None
         assert controller.excluded_paths == set()
+        assert controller.pending_exclusions == set()
         assert controller.exclusions_file == "exclusions.txt"
         assert controller.paused is False
         assert controller.black_screen is False
         assert controller.drive_ok is True
         assert controller.download_bytes_per_sec is None
         assert controller.measurements_file == "load_measurements.csv"
-        assert controller.shuffle_enabled is True
-        assert controller.settings_file == "settings.json"
+        assert controller.state_version == 0
+        assert controller.min_next_advance_time == 0.0
 
-    def test_marks_management(self):
-        """Test marking and unmarking slides"""
+    def test_pending_exclusions_management(self):
+        """Test marking and unmarking paths as pending exclusion"""
         controller = SlideshowController()
-        
+
         # Add marks
-        controller.current_marks.add(0)
-        controller.current_marks.add(2)
-        assert 0 in controller.current_marks
-        assert 2 in controller.current_marks
-        assert 1 not in controller.current_marks
-        
+        controller.pending_exclusions.add("a.jpg")
+        controller.pending_exclusions.add("c.jpg")
+        assert "a.jpg" in controller.pending_exclusions
+        assert "c.jpg" in controller.pending_exclusions
+        assert "b.jpg" not in controller.pending_exclusions
+
         # Remove marks
-        controller.current_marks.remove(0)
-        assert 0 not in controller.current_marks
-        assert 2 in controller.current_marks
+        controller.pending_exclusions.remove("a.jpg")
+        assert "a.jpg" not in controller.pending_exclusions
+        assert "c.jpg" in controller.pending_exclusions
+
+    def test_bump_version_increments_and_notifies(self):
+        """Test bump_version increments state_version and wakes waiters
+        (used by web_server's SSE stream to know when to push)"""
+        controller = SlideshowController()
+        woke = threading.Event()
+
+        def waiter():
+            with controller.lock:
+                if controller.lock.wait_for(lambda: controller.state_version != 0, timeout=2):
+                    woke.set()
+
+        t = threading.Thread(target=waiter, daemon=True)
+        t.start()
+        import time
+        time.sleep(0.1)  # let the waiter block on wait_for first
+
+        with controller.lock:
+            controller.bump_version()
+
+        t.join(timeout=2)
+        assert controller.state_version == 1
+        assert woke.is_set()
     
     def test_pause_state(self):
         """Test pause and play states"""
@@ -761,79 +783,68 @@ class TestLoadExclusions:
         assert self.controller.excluded_paths == {"test1.jpg", "test2.jpg"}
 
     def test_load_then_finalize_appends(self):
-        """Test that paths loaded at startup persist and new marks append to the file"""
+        """Test that paths loaded at startup persist and newly committed
+        pending exclusions append to the file"""
         with open(self.controller.exclusions_file, "w") as f:
             f.write("old.jpg\n")
 
         load_exclusions(self.controller)
         assert "old.jpg" in self.controller.excluded_paths
 
-        self.controller.current_slides = [
-            Slide(path="new.jpg", surface=None, orientation="L")
-        ]
-        self.controller.current_marks = {0}
+        # "new.jpg" was marked (as /api/mark would do) and has since
+        # scrolled out of view entirely, so it's ready to commit.
+        self.controller.pending_exclusions = {"new.jpg"}
+        self.controller.excluded_paths.add("new.jpg")
+        self.controller.current_slides = []
+        self.controller.history = []
+
         finalize_exclusions(self.controller)
 
         assert self.controller.excluded_paths == {"old.jpg", "new.jpg"}
+        assert self.controller.pending_exclusions == set()
         with open(self.controller.exclusions_file) as f:
             lines = [l.strip() for l in f if l.strip()]
         assert lines == ["old.jpg", "new.jpg"]
 
 
-class TestLoadSettings:
-    """Test suite for load_settings function"""
+class TestLoadDisplayConfig:
+    """Test suite for load_display_config function"""
 
     def setup_method(self):
-        """Create test controller pointing at a temp settings file"""
         self.temp_dir = tempfile.mkdtemp()
-        self.controller = SlideshowController()
-        self.controller.settings_file = os.path.join(self.temp_dir, "settings.json")
+        self.config_path = os.path.join(self.temp_dir, "py-frame.conf")
 
     def teardown_method(self):
-        """Clean up test files"""
         import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def test_missing_file_keeps_default(self):
-        """Test that a missing settings file leaves the default (shuffle
-        enabled) untouched"""
-        load_settings(self.controller)
+    def _write(self, content):
+        with open(self.config_path, "w") as f:
+            f.write(content)
 
-        assert self.controller.shuffle_enabled is True
+    def test_missing_file_defaults_to_shuffle_true(self):
+        assert load_display_config(self.config_path) is True
 
-    def test_loads_persisted_shuffle_disabled(self):
-        """Test that a persisted shuffle_enabled: false is honored"""
-        with open(self.controller.settings_file, "w") as f:
-            f.write('{"shuffle_enabled": false}')
+    def test_reads_shuffle_true(self):
+        self._write("[display]\nshuffle = true\n")
+        assert load_display_config(self.config_path) is True
 
-        load_settings(self.controller)
+    def test_reads_shuffle_false(self):
+        self._write("[display]\nshuffle = false\n")
+        assert load_display_config(self.config_path) is False
 
-        assert self.controller.shuffle_enabled is False
+    def test_missing_section_falls_back_to_default(self):
+        self._write("[schedule]\nstart = 22:00\nend = 07:00\n")
+        assert load_display_config(self.config_path) is True
 
-    def test_loads_persisted_shuffle_enabled(self):
-        """Test that a persisted shuffle_enabled: true is honored"""
-        self.controller.shuffle_enabled = False  # start from the opposite
-        with open(self.controller.settings_file, "w") as f:
-            f.write('{"shuffle_enabled": true}')
-
-        load_settings(self.controller)
-
-        assert self.controller.shuffle_enabled is True
-
-    def test_corrupt_file_falls_back_to_default_instead_of_crashing(self):
-        """Test that invalid JSON doesn't crash startup, just keeps defaults"""
-        with open(self.controller.settings_file, "w") as f:
-            f.write("not valid json{{{")
-
-        load_settings(self.controller)  # should not raise
-
-        assert self.controller.shuffle_enabled is True
+    def test_malformed_file_falls_back_to_default_instead_of_crashing(self):
+        self._write("[display]\nshuffle = not_a_bool\n")
+        assert load_display_config(self.config_path) is True
 
 
 class TestClassifyPatternType:
     """Test suite for classify_pattern_type, the shared P/L threshold
-    classifier used by both extract_pattern_from_deque and
-    reclassify_pattern_type (kept in one place so the two can't drift)"""
+    classifier used by extract_pattern_from_deque"""
 
     def test_ppp(self):
         assert classify_pattern_type(count_p=3, count_l=0) == (1, 3, 0)
@@ -854,228 +865,101 @@ class TestClassifyPatternType:
         assert classify_pattern_type(count_p=0, count_l=0) is None
 
 
-class TestReclassifyPatternType:
-    """Test suite for reclassify_pattern_type function"""
-
-    def _slides(self, orientations):
-        return [Slide(path=f"{o}{i}.jpg", surface=None, orientation=o) for i, o in enumerate(orientations)]
-
-    def test_empty_slides_drops_entry(self):
-        assert reclassify_pattern_type([], 2) is None
-
-    def test_type0_keeps_type_when_nonempty(self):
-        slides = self._slides("L")
-        assert reclassify_pattern_type(slides, 0) == 0
-
-    def test_type1_keeps_type_as_p_count_shrinks(self):
-        slides = self._slides("PP")
-        assert reclassify_pattern_type(slides, 1) == 1
-
-    def test_type2_downgrades_to_type3_when_one_p_removed(self):
-        # started as PPLLL (2P, 3L); one P got excluded -> 1P, 3L fits PLLL
-        slides = self._slides("PLLL")
-        assert reclassify_pattern_type(slides, 2) == 3
-
-    def test_type2_dropped_when_l_count_falls_below_3(self):
-        # PPLLL lost one L -> 2P, 2L doesn't fit any pattern
-        slides = self._slides("PPLL")
-        assert reclassify_pattern_type(slides, 2) is None
-
-    def test_type2_dropped_when_all_p_excluded(self):
-        # PPLLL lost both P's -> 3 L's alone don't fit any pattern
-        slides = self._slides("LLL")
-        assert reclassify_pattern_type(slides, 2) is None
-
-    def test_type3_dropped_when_sole_portrait_excluded(self):
-        # PLLL lost its only P -> 3 L's alone don't fit any pattern
-        slides = self._slides("LLL")
-        assert reclassify_pattern_type(slides, 3) is None
-
-    def test_type3_downgrades_to_single_slide_when_only_one_remains(self):
-        slides = self._slides("L")
-        assert reclassify_pattern_type(slides, 3) == 0
-
-
 class TestFinalizeExclusions:
-    """Test suite for finalize_exclusions function"""
-    
+    """Test suite for finalize_exclusions, the commit sweep. /api/mark is
+    what adds/removes paths from pending_exclusions/excluded_paths
+    immediately; finalize_exclusions only decides when a pending mark
+    becomes permanent -- once its path is no longer reachable via
+    current_slides or history (undo is no longer possible), it's written
+    to exclusions_file and dropped from pending_exclusions."""
+
     def setup_method(self):
-        """Initialize pygame and create test controller"""
         pygame.init()
         self.temp_dir = tempfile.mkdtemp()
         self.controller = SlideshowController()
         self.controller.exclusions_file = os.path.join(self.temp_dir, "exclusions.txt")
-    
+
     def teardown_method(self):
-        """Clean up test files and pygame"""
         import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
         pygame.quit()
-    
-    def test_finalize_no_marks(self):
-        """Test that finalize with no marks does nothing"""
+
+    def test_finalize_no_pending_is_a_noop(self):
         self.controller.current_slides = [
-            Slide(path="test1.jpg", surface=pygame.Surface((100, 100)), orientation="L")
+            Slide(path="test1.jpg", surface=pygame.Surface((10, 10)), orientation="L")
         ]
-        
+
         finalize_exclusions(self.controller)
-        
-        assert len(self.controller.excluded_paths) == 0
+
+        assert self.controller.excluded_paths == set()
         assert not os.path.exists(self.controller.exclusions_file)
-    
-    def test_finalize_with_marks(self):
-        """Test that marked slides are added to exclusions"""
+
+    def test_pending_path_still_on_current_screen_is_not_committed(self):
+        """A photo marked on the screen currently displayed must not be
+        committed yet -- it's still undo-able."""
         self.controller.current_slides = [
-            Slide(path="test1.jpg", surface=pygame.Surface((100, 100)), orientation="L"),
-            Slide(path="test2.jpg", surface=pygame.Surface((100, 100)), orientation="L")
+            Slide(path="test1.jpg", surface=pygame.Surface((10, 10)), orientation="L")
         ]
-        self.controller.current_marks = {0, 1}
-        
-        finalize_exclusions(self.controller)
-        
-        assert "test1.jpg" in self.controller.excluded_paths
-        assert "test2.jpg" in self.controller.excluded_paths
-        assert len(self.controller.current_marks) == 0
-        assert os.path.exists(self.controller.exclusions_file)
-    
-    def test_finalize_cleans_history(self):
-        """Test that excluded paths are removed from history"""
-        slide1 = Slide(path="test1.jpg", surface=pygame.Surface((100, 100)), orientation="L")
-        slide2 = Slide(path="test2.jpg", surface=pygame.Surface((100, 100)), orientation="L")
-        
-        self.controller.current_slides = [slide1]
-        self.controller.current_marks = {0}
-        self.controller.history = [([slide1, slide2], 0)]
-        self.controller.history_index = 0
-        
-        finalize_exclusions(self.controller)
-        
-        # slide1 should be removed from history
-        assert len(self.controller.history) == 1
-        assert len(self.controller.history[0][0]) == 1
-        assert self.controller.history[0][0][0].path == "test2.jpg"
-
-    def test_finalize_reclassifies_broken_pattern_in_history(self):
-        """Marking a P slide on a PPLLL screen should downgrade a matching
-        history entry to PLLL instead of leaving a broken pattern_type=2 entry"""
-        p1 = Slide(path="p1.jpg", surface=pygame.Surface((10, 20)), orientation="P")
-        p2 = Slide(path="p2.jpg", surface=pygame.Surface((10, 20)), orientation="P")
-        l1 = Slide(path="l1.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-        l2 = Slide(path="l2.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-        l3 = Slide(path="l3.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-
-        self.controller.current_slides = [p1, p2, l1, l2, l3]
-        self.controller.current_marks = {0}  # mark p1
-        self.controller.history = [([p1, p2, l1, l2, l3], 2)]
-        self.controller.history_index = 0
+        self.controller.pending_exclusions = {"test1.jpg"}
+        self.controller.excluded_paths = {"test1.jpg"}
 
         finalize_exclusions(self.controller)
 
-        assert len(self.controller.history) == 1
-        remaining_slides, ptype = self.controller.history[0]
-        assert ptype == 3
-        assert [s.path for s in remaining_slides] == ["p2.jpg", "l1.jpg", "l2.jpg", "l3.jpg"]
+        assert self.controller.pending_exclusions == {"test1.jpg"}
+        assert not os.path.exists(self.controller.exclusions_file)
 
-    def test_finalize_drops_history_entry_that_no_longer_fits_any_pattern(self):
-        """Excluding both portraits from a PPLLL screen leaves 3 L's, which
-        doesn't fit any known pattern, so the whole entry should be dropped"""
-        p1 = Slide(path="p1.jpg", surface=pygame.Surface((10, 20)), orientation="P")
-        p2 = Slide(path="p2.jpg", surface=pygame.Surface((10, 20)), orientation="P")
-        l1 = Slide(path="l1.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-        l2 = Slide(path="l2.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-        l3 = Slide(path="l3.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-
-        self.controller.current_slides = [p1, p2, l1, l2, l3]
-        self.controller.current_marks = {0, 1}  # mark both P's
-        self.controller.history = [([p1, p2, l1, l2, l3], 2)]
-        self.controller.history_index = 0
-
-        finalize_exclusions(self.controller)
-
-        assert self.controller.history == []
-        assert self.controller.history_index == -1
-
-    def test_finalize_history_index_follows_viewed_entry_when_earlier_entry_dropped(self):
-        """If an entry BEFORE the currently-viewed one gets dropped, history_index
-        should follow the viewed entry to its new position, not drift onto
-        whatever entry now occupies the old numeric index"""
-        shared = Slide(path="shared.jpg", surface=pygame.Surface((10, 20)), orientation="P")
-        l1 = Slide(path="l1.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-        l2 = Slide(path="l2.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-        l3 = Slide(path="l3.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-
-        # Entry A: PLLL whose sole portrait is the same photo about to be
-        # excluded from the currently-viewed screen -- A should get dropped.
-        entry_a_slides = [
-            Slide(path="shared.jpg", surface=pygame.Surface((10, 20)), orientation="P"),
-            l1, l2, l3,
+    def test_pending_path_still_in_history_is_not_committed(self):
+        """A marked photo that scrolled off-screen but is still reachable
+        via Prev (i.e. still in history) must stay undo-able."""
+        old_slide = Slide(path="old.jpg", surface=pygame.Surface((10, 10)), orientation="L")
+        self.controller.current_slides = [
+            Slide(path="new.jpg", surface=pygame.Surface((10, 10)), orientation="L")
         ]
+        self.controller.history = [([old_slide], 0)]
+        self.controller.pending_exclusions = {"old.jpg"}
+        self.controller.excluded_paths = {"old.jpg"}
 
-        # Entry B: the currently-viewed screen, a PPP with "shared.jpg" as
-        # one of three portraits -- degrades gracefully (stays type 1) and
-        # survives the exclusion.
-        p2 = Slide(path="p2.jpg", surface=pygame.Surface((10, 20)), orientation="P")
-        p3 = Slide(path="p3.jpg", surface=pygame.Surface((10, 20)), orientation="P")
-        entry_b_slides = [shared, p2, p3]
+        finalize_exclusions(self.controller)
 
-        # Entry C: unrelated, untouched.
-        entry_c_slides = [
-            Slide(path="c1.jpg", surface=pygame.Surface((10, 20)), orientation="P"),
-            Slide(path="c2.jpg", surface=pygame.Surface((10, 20)), orientation="P"),
-            Slide(path="c3.jpg", surface=pygame.Surface((10, 20)), orientation="P"),
+        assert self.controller.pending_exclusions == {"old.jpg"}
+        assert not os.path.exists(self.controller.exclusions_file)
+
+    def test_pending_path_gone_from_current_and_history_is_committed(self):
+        """Once a marked photo has scrolled entirely out of reach, it
+        should be written to exclusions_file and dropped from pending."""
+        self.controller.current_slides = [
+            Slide(path="new.jpg", surface=pygame.Surface((10, 10)), orientation="L")
         ]
-
-        self.controller.current_slides = entry_b_slides
-        self.controller.current_marks = {0}  # mark "shared.jpg"
         self.controller.history = [
-            (entry_a_slides, 3),
-            (entry_b_slides, 1),
-            (entry_c_slides, 1),
+            ([Slide(path="mid.jpg", surface=pygame.Surface((10, 10)), orientation="L")], 0)
         ]
-        self.controller.history_index = 1  # viewing B
+        self.controller.pending_exclusions = {"old.jpg"}
+        self.controller.excluded_paths = {"old.jpg"}
 
         finalize_exclusions(self.controller)
 
-        # A should have been dropped (its only P was excluded, leaving 3 L's,
-        # which fits no pattern)
-        assert len(self.controller.history) == 2
-        remaining_paths = [[s.path for s in slides] for slides, _ in self.controller.history]
-        assert remaining_paths[0] == ["p2.jpg", "p3.jpg"]  # B, shared.jpg removed
-        assert remaining_paths[1] == ["c1.jpg", "c2.jpg", "c3.jpg"]  # C, untouched
+        assert self.controller.pending_exclusions == set()
+        assert self.controller.excluded_paths == {"old.jpg"}
+        with open(self.controller.exclusions_file) as f:
+            lines = [l.strip() for l in f if l.strip()]
+        assert lines == ["old.jpg"]
 
-        # history_index must still point at B (now at position 0), not
-        # drift onto C just because C used to be at index 2.
-        assert self.controller.history_index == 0
-
-    def test_finalize_history_index_clamps_when_viewed_entry_itself_is_dropped(self):
-        """If the currently-viewed entry itself no longer fits any pattern
-        after exclusion, history_index should clamp into the remaining
-        range rather than reference a slot that no longer exists"""
-        p1 = Slide(path="p1.jpg", surface=pygame.Surface((10, 20)), orientation="P")
-        l1 = Slide(path="l1.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-        l2 = Slide(path="l2.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-        l3 = Slide(path="l3.jpg", surface=pygame.Surface((20, 10)), orientation="L")
-
-        entry_a_slides = [
-            Slide(path="a1.jpg", surface=pygame.Surface((10, 20)), orientation="P"),
-            Slide(path="a2.jpg", surface=pygame.Surface((10, 20)), orientation="P"),
-            Slide(path="a3.jpg", surface=pygame.Surface((10, 20)), orientation="P"),
+    def test_only_paths_that_are_gone_get_committed(self):
+        """A mix of still-visible and fully-scrolled-off pending exclusions
+        -- only the latter should be committed."""
+        self.controller.current_slides = [
+            Slide(path="visible.jpg", surface=pygame.Surface((10, 10)), orientation="L")
         ]
-        entry_b_slides = [p1, l1, l2, l3]  # PLLL, the currently-viewed screen
-
-        self.controller.current_slides = entry_b_slides
-        self.controller.current_marks = {0}  # mark the sole P on this screen
-        self.controller.history = [
-            (entry_a_slides, 1),
-            (entry_b_slides, 3),
-        ]
-        self.controller.history_index = 1  # viewing B
+        self.controller.history = []
+        self.controller.pending_exclusions = {"visible.jpg", "gone.jpg"}
+        self.controller.excluded_paths = {"visible.jpg", "gone.jpg"}
 
         finalize_exclusions(self.controller)
 
-        # B is dropped (0 P's, 3 L's fits no pattern); only A remains
-        assert len(self.controller.history) == 1
-        assert self.controller.history_index == 0
+        assert self.controller.pending_exclusions == {"visible.jpg"}
+        with open(self.controller.exclusions_file) as f:
+            lines = [l.strip() for l in f if l.strip()]
+        assert lines == ["gone.jpg"]
 
 
 class TestDownscaleSlideToScreen:

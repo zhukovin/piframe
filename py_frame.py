@@ -105,11 +105,14 @@ class Slide:
 
 class SlideshowController:
     def __init__(self):
-        self.lock = Lock()
+        # A Condition wraps a lock (acquire/release/context-manager behave
+        # exactly like the plain Lock this used to be) but also lets
+        # web_server's SSE stream block on wait_for(...) until render_loop
+        # (or a request handler) calls bump_version(), instead of polling.
+        self.lock = threading.Condition()
         # Current screen
         self.current_slides: list[Slide] = []
         self.current_pattern_type: Optional[int] = None
-        self.current_marks: set[int] = set()
 
         # History
         self.history: list[tuple[list[Slide], int]] = []
@@ -118,8 +121,12 @@ class SlideshowController:
         # Pending command from web: {"type": "...", "steps": int}
         self.pending_command: Optional[dict] = None
 
-        # Exclusions
+        # Exclusions. `pending_exclusions` holds paths that were marked but
+        # not yet committed to exclusions_file -- they stay excluded (won't
+        # be re-fetched) but remain visible/undoable for as long as they're
+        # still reachable in `history` (see finalize_exclusions).
         self.excluded_paths: set[str] = set()
+        self.pending_exclusions: set[str] = set()
         self.exclusions_file: str = "exclusions.txt"
 
         # paused state
@@ -136,13 +143,25 @@ class SlideshowController:
         # here for later offline analysis of size/time/speed correlation.
         self.measurements_file: str = "load_measurements.csv"
 
-        # Photo display order at startup: shuffle (fully randomized order)
-        # vs. random-start (original file order, but starting from a random
-        # point and wrapping around). Persisted to disk so the web UI
-        # toggle survives restarts; takes effect the next time the app
-        # starts, since the fetcher thread's order is fixed once built.
-        self.shuffle_enabled: bool = True
-        self.settings_file: str = "settings.json"
+        # Bumped (under self.lock) any time something /api/state reports
+        # changes, so web clients can detect staleness (a mark request
+        # against an outdated screen) and the SSE stream knows when to push.
+        self.state_version: int = 0
+
+        # When a mark is added (not removed), render_loop holds off the
+        # *automatic* advance until this time, so the screen doesn't change
+        # out from under the user right after they mark something. Manual
+        # Next/Prev bypass this like they bypass current_end_time.
+        self.min_next_advance_time: float = 0.0
+
+    def bump_version(self):
+        """
+        Must be called while holding self.lock. Marks /api/state-visible
+        state as changed and wakes any thread blocked in self.lock.wait_for
+        (the SSE stream in web_server.py).
+        """
+        self.state_version += 1
+        self.lock.notify_all()
 
 
 def make_old_paper_surface(size):
@@ -254,10 +273,7 @@ def classify_pattern_type(count_p: int, count_l: int) -> Optional[Tuple[int, int
         Type 1: PPP      (needs 3 Portrait, 0 Landscape)
         Type 2: PPLLL    (needs 2 Portrait, 3 Landscape)
         Type 3: PLLL     (needs 1 Portrait, 3 Landscape)
-    Returns None if no valid pattern fits. Shared by extract_pattern_from_deque
-    (fresh extraction from the incoming deque) and reclassify_pattern_type
-    (re-deriving a history entry's type after exclusion) so the thresholds
-    can't silently drift between the two.
+    Returns None if no valid pattern fits.
     """
     if count_p >= 3:
         return 1, 3, 0
@@ -908,33 +924,10 @@ def load_exclusions(controller: SlideshowController):
                 controller.excluded_paths.add(path)
 
 
-def load_settings(controller: SlideshowController):
-    """
-    Load persisted app settings (currently just shuffle_enabled) from
-    controller.settings_file, if it exists. Called once at startup, before
-    read_file_list, so the web UI's shuffle/random-start toggle survives
-    restarts. A missing or corrupt settings file falls back to the
-    defaults already set on the controller rather than crashing startup.
-    """
-    if not os.path.exists(controller.settings_file):
-        return
-
-    import json
-
-    try:
-        with open(controller.settings_file, "r") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        logger.warning(f"Could not read {controller.settings_file}, using defaults", exc_info=True)
-        return
-
-    if "shuffle_enabled" in data:
-        controller.shuffle_enabled = bool(data["shuffle_enabled"])
-
-
 CONFIG_FILE = "py-frame.conf"
 DEFAULT_NIGHT_START = (22, 0)
 DEFAULT_NIGHT_END = (7, 0)
+DEFAULT_SHUFFLE = True
 
 
 def _parse_hhmm(value: str) -> tuple[int, int]:
@@ -973,6 +966,33 @@ def load_schedule_config(path: str = CONFIG_FILE) -> tuple[tuple[int, int], tupl
         return DEFAULT_NIGHT_START, DEFAULT_NIGHT_END
 
     return start, end
+
+
+def load_display_config(path: str = CONFIG_FILE) -> bool:
+    """
+    Read the startup photo order from an INI-style config file, e.g.:
+
+        [display]
+        shuffle = true
+
+    `shuffle = true` fully randomizes display order; `shuffle = false` keeps
+    the list's original order but starts from a random point and wraps
+    around. Falls back to DEFAULT_SHUFFLE when the file/section/key is
+    missing or malformed. This replaces the old web UI shuffle toggle --
+    the order is now fixed for the life of the process, set once at startup.
+    """
+    if not os.path.exists(path):
+        return DEFAULT_SHUFFLE
+
+    import configparser
+
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(path)
+        return parser.getboolean("display", "shuffle", fallback=DEFAULT_SHUFFLE)
+    except (configparser.Error, ValueError):
+        logger.warning(f"Could not parse {path}, using default shuffle={DEFAULT_SHUFFLE}", exc_info=True)
+        return DEFAULT_SHUFFLE
 
 
 def is_within_night_window(hour: int, minute: int, start: tuple[int, int], end: tuple[int, int]) -> bool:
@@ -1018,103 +1038,32 @@ def set_hdmi_power(on: bool):
         )
 
 
-def reclassify_pattern_type(slides: List[Slide], original_ptype: int) -> Optional[int]:
-    """
-    Decide how a history entry should be classified after some of its slides
-    were removed due to exclusion.
-
-    Patterns 0 (solo slide) and 1 (PPP) degrade gracefully as slides are
-    removed, so they keep their original type. Patterns 2 (PPLLL) and 3
-    (PLLL) depend on specific P/L proportions to avoid blank gaps in
-    compute_pattern_rects, so they are re-derived from what's left using
-    classify_pattern_type (the same thresholds extract_pattern_from_deque
-    uses). Returns None if nothing valid remains and the entry should be
-    dropped.
-    """
-    if not slides:
-        return None
-
-    if original_ptype in (0, 1):
-        return original_ptype
-
-    count_p = sum(1 for s in slides if s.orientation == "P")
-    count_l = sum(1 for s in slides if s.orientation == "L")
-
-    classification = classify_pattern_type(count_p, count_l)
-    if classification is not None:
-        return classification[0]
-    elif len(slides) == 1:
-        return 0
-    else:
-        return None
-
-
 def finalize_exclusions(controller: SlideshowController):
     """
-    Take currently marked slots from the *current* screen,
-    add their paths to excluded_paths + exclusions file,
-    and also clean up history so excluded images never appear again
-    (even when navigating back with Prev).
+    Commit sweep: /api/mark already adds/removes paths from
+    excluded_paths + pending_exclusions immediately (so the fetcher stops
+    re-queuing a marked photo right away). This just decides when a pending
+    exclusion becomes permanent -- once a marked path is no longer present
+    in current_slides or anywhere in history (i.e. it's scrolled further
+    back than Prev can reach, capped at MAX_HISTORY_SCREENS), it's written
+    to exclusions_file and dropped from pending_exclusions. Until that
+    point it stays undo-able via /api/mark. Called once per screen advance.
     """
-    # If there is no current screen, just clear marks and return
-    if not controller.current_slides:
-        with controller.lock:
-            controller.current_marks.clear()
-        return
-
-    # Grab and clear marks under lock
     with controller.lock:
-        marked_indices = list(controller.current_marks)
-        controller.current_marks.clear()
-
-        if not marked_indices:
-            # nothing was marked, no exclusions to process
+        if not controller.pending_exclusions:
             return
 
-        # 1) Add marked slide paths to excluded_paths
-        new_paths: list[str] = []
-        for i in marked_indices:
-            if 0 <= i < len(controller.current_slides):
-                path = controller.current_slides[i].path
-                if path not in controller.excluded_paths:
-                    controller.excluded_paths.add(path)
-                    new_paths.append(path)
+        visible_paths = {s.path for s in controller.current_slides}
+        for slides, _ in controller.history:
+            visible_paths.update(s.path for s in slides)
 
-        # 2) Clean up history: remove any slides whose path is now excluded,
-        #    and reclassify (or drop) entries that no longer fit their
-        #    pattern's required P/L composition.
-        if controller.history:
-            old_index = controller.history_index
-            new_history: list[tuple[list[Slide], int]] = []
-            # Track where the entry the user was actually viewing ends up,
-            # so history_index can follow it instead of drifting onto a
-            # different entry when something *earlier* in the list gets
-            # dropped (a plain index clamp only guards the tail, not this).
-            new_index_for_old_index: Optional[int] = None
+        newly_committed = [p for p in controller.pending_exclusions if p not in visible_paths]
+        for p in newly_committed:
+            controller.pending_exclusions.discard(p)
 
-            for i, (slides, ptype) in enumerate(controller.history):
-                filtered = [s for s in slides if s.path not in controller.excluded_paths]
-                new_ptype = reclassify_pattern_type(filtered, ptype)
-                if new_ptype is not None:
-                    if i == old_index:
-                        new_index_for_old_index = len(new_history)
-                    new_history.append((filtered, new_ptype))
-
-            controller.history = new_history
-
-            if not controller.history:
-                controller.history_index = -1
-            elif new_index_for_old_index is not None:
-                # The viewed entry survived (possibly at a new position).
-                controller.history_index = new_index_for_old_index
-            else:
-                # The viewed entry itself was dropped; clamp into range.
-                controller.history_index = min(old_index, len(controller.history) - 1)
-
-    # 3) Append newly excluded paths to the exclusions file (outside the lock)
-    if new_paths:
+    if newly_committed:
         with open(controller.exclusions_file, "a") as f:
-            for p in new_paths:
+            for p in newly_committed:
                 f.write(p + "\n")
 
 
@@ -1191,7 +1140,7 @@ def render_loop(
     current_background: Optional[pygame.Surface] = None
     current_end_time: float = 0.0
 
-    last_marks: set[int] = set()
+    last_marks: set[str] = set()
     first_run = True
     prev_is_night: Optional[bool] = None  # for schedule transitions
     last_status_render_time: float = 0.0
@@ -1219,12 +1168,14 @@ def render_loop(
                 with controller.lock:
                     controller.black_screen = True
                     controller.paused = True
+                    controller.bump_version()
                 set_hdmi_power(False)
             else:
                 # Leaving night: auto screen_on + resume
                 with controller.lock:
                     controller.black_screen = False
                     controller.paused = False
+                    controller.bump_version()
                 set_hdmi_power(True)
             prev_is_night = is_night
 
@@ -1243,13 +1194,16 @@ def render_loop(
             controller.pending_command = None
             paused = controller.paused
             black_screen = controller.black_screen
-            current_marks_snapshot = set(controller.current_marks)
+            pending_exclusions_snapshot = set(controller.pending_exclusions)
+            min_next_advance_time = controller.min_next_advance_time
             drive_ok = controller.drive_ok
             download_bytes_per_sec = controller.download_bytes_per_sec
 
-        # Detect mark changes (compare snapshots)
-        marks_changed = (current_marks_snapshot != last_marks)
-        last_marks = current_marks_snapshot
+        # Detect mark changes (compare snapshots). /api/mark now applies
+        # immediately server-side, so this just catches "something the user
+        # marked/unmarked needs to be reflected on the physical screen."
+        marks_changed = (pending_exclusions_snapshot != last_marks)
+        last_marks = pending_exclusions_snapshot
 
         force_next = False
         force_prev = False
@@ -1266,15 +1220,18 @@ def render_loop(
             elif ctype == "pause":
                 with controller.lock:
                     controller.paused = True
+                    controller.bump_version()
                 paused = True
             elif ctype == "play":
                 with controller.lock:
                     controller.paused = False
+                    controller.bump_version()
                 paused = False
             elif ctype == "screen_off":
                 with controller.lock:
                     controller.black_screen = True
                     controller.paused = True
+                    controller.bump_version()
                 black_screen = True
                 paused = True
                 set_hdmi_power(False)
@@ -1282,6 +1239,7 @@ def render_loop(
                 with controller.lock:
                     controller.black_screen = False
                     controller.paused = False
+                    controller.bump_version()
                 black_screen = False
                 paused = False
                 set_hdmi_power(True)
@@ -1296,8 +1254,15 @@ def render_loop(
         elif force_next:
             need_advance = True
             backward = False
-        elif (not current_slides) or (now >= current_end_time and not paused and not black_screen):
-            # auto-advance only if not paused and not in black-screen mode
+        elif (not current_slides) or (
+                now >= max(current_end_time, min_next_advance_time)
+                and not paused and not black_screen
+        ):
+            # auto-advance only if not paused and not in black-screen mode.
+            # min_next_advance_time holds the auto-advance off for a few
+            # seconds right after a fresh mark, so the screen doesn't change
+            # out from under the user mid-decision (manual Next/Prev above
+            # still bypass this entirely, same as they bypass current_end_time).
             need_advance = True
             backward = False
 
@@ -1370,6 +1335,7 @@ def render_loop(
                     with controller.lock:
                         controller.current_slides = current_slides
                         controller.current_pattern_type = current_pattern_type
+                        controller.bump_version()
 
                 need_to_render = True
 
@@ -1464,6 +1430,7 @@ def render_loop(
                         with controller.lock:
                             controller.current_slides = current_slides
                             controller.current_pattern_type = current_pattern_type
+                            controller.bump_version()
 
         # --- Render only when needed ---
         if need_to_render:
@@ -1475,7 +1442,10 @@ def render_loop(
             else:
                 if current_slides and current_pattern_type is not None:
                     with controller.lock:
-                        marks_copy = set(controller.current_marks)
+                        marks_copy = {
+                            i for i, s in enumerate(current_slides)
+                            if s.path in controller.pending_exclusions
+                        }
 
                     if current_pattern_type == 0:
                         render_single_landscape(
@@ -1586,11 +1556,11 @@ def main():
 
     controller = SlideshowController()
     load_exclusions(controller)
-    load_settings(controller)
     night_start, night_end = load_schedule_config()
+    shuffle_enabled = load_display_config()
 
     list_path = sys.argv[1]
-    file_paths = read_file_list(list_path, shuffle=controller.shuffle_enabled)
+    file_paths = read_file_list(list_path, shuffle=shuffle_enabled)
 
     if not file_paths:
         print(f"No .jpg/.jpeg entries found in {list_path}; nothing to display.")

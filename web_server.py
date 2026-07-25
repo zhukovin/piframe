@@ -1,9 +1,17 @@
 # web_server.py
-from flask import Flask, request, jsonify
+import io
+import json
+import time
 from typing import TYPE_CHECKING
+
+import pygame
+from flask import Flask, Response, request, jsonify
 
 if TYPE_CHECKING:
     from py_frame import SlideshowController  # adjust import
+
+MARK_ADVANCE_DELAY_SECONDS = 5
+THUMBNAIL_WIDTH = 160
 
 
 def _parse_int_field(data: dict, key: str, default: int):
@@ -18,24 +26,100 @@ def _parse_int_field(data: dict, key: str, default: int):
         return None, (jsonify({"ok": False, "error": f"invalid {key}"}), 400)
 
 
+def build_state_payload(controller: "SlideshowController") -> dict:
+    """
+    Build the JSON-able state dict shared by /api/state (single fetch) and
+    /api/stream (SSE push), so the two representations never drift apart.
+    Must be called while holding controller.lock.
+    """
+    slides = [
+        {
+            "index": i,
+            "path": s.path,
+            "marked": s.path in controller.pending_exclusions,
+            "pattern_type": controller.current_pattern_type,
+        }
+        for i, s in enumerate(controller.current_slides)
+    ]
+    return {
+        "slides": slides,
+        "paused": controller.paused,
+        "black": controller.black_screen,
+        "version": controller.state_version,
+    }
+
+
+def _find_slide_surface(controller: "SlideshowController", path: str):
+    """
+    Look up a Slide's already-decoded surface by path: first among the
+    slides on screen right now, then in history (most recent first) so a
+    thumbnail can still be fetched for a photo the user just navigated
+    away from. Must be called while holding controller.lock.
+    """
+    for s in controller.current_slides:
+        if s.path == path:
+            return s.surface
+    for slides, _ in reversed(controller.history):
+        for s in slides:
+            if s.path == path:
+                return s.surface
+    return None
+
+
 def create_app(controller: "SlideshowController") -> Flask:
     app = Flask(__name__)
 
     @app.route("/api/state")
     def api_state():
         with controller.lock:
-            slides = [
-                {
-                    "index": i,
-                    "path": s.path,
-                    "marked": i in controller.current_marks,
-                    "pattern_type": controller.current_pattern_type,
-                }
-                for i, s in enumerate(controller.current_slides)
-            ]
-            paused = controller.paused
-            black = controller.black_screen
-        return jsonify({"slides": slides, "paused": paused, "black": black})
+            payload = build_state_payload(controller)
+        return jsonify(payload)
+
+    @app.route("/api/stream")
+    def api_stream():
+        def event_stream():
+            last_seen = -1
+            while True:
+                with controller.lock:
+                    controller.lock.wait_for(
+                        lambda: controller.state_version != last_seen, timeout=15
+                    )
+                    payload = build_state_payload(controller)
+                    last_seen = controller.state_version
+                yield f"data: {json.dumps(payload)}\n\n"
+
+        return Response(event_stream(), mimetype="text/event-stream")
+
+    @app.route("/api/thumbnail")
+    def api_thumbnail():
+        path = request.args.get("path", "")
+        if not path:
+            return jsonify({"ok": False, "error": "missing path"}), 400
+
+        with controller.lock:
+            surface = _find_slide_surface(controller, path)
+            if surface is not None:
+                w, h = surface.get_width(), surface.get_height()
+                if w > 0 and h > 0:
+                    scale = THUMBNAIL_WIDTH / w
+                    thumb = pygame.transform.smoothscale(
+                        surface, (THUMBNAIL_WIDTH, max(1, round(h * scale)))
+                    )
+                else:
+                    thumb = None
+            else:
+                thumb = None
+
+        if thumb is None:
+            return jsonify({"ok": False, "error": "not found"}), 404
+
+        buf = io.BytesIO()
+        pygame.image.save(thumb, buf, "thumb.png")
+        return Response(
+            buf.getvalue(),
+            mimetype="image/png",
+            headers={"Cache-Control": "max-age=300"},
+        )
 
     @app.route("/api/mark", methods=["POST"])
     def api_mark():
@@ -43,33 +127,39 @@ def create_app(controller: "SlideshowController") -> Flask:
         slot, error = _parse_int_field(data, "slot", -1)
         if error:
             return error
+        expected_version, error = _parse_int_field(data, "expected_version", -1)
+        if error:
+            return error
+        path = data.get("path")
 
         with controller.lock:
+            if expected_version != controller.state_version:
+                return jsonify({
+                    "ok": False,
+                    "error": "stale",
+                    "current_version": controller.state_version,
+                }), 409
+
             if not (0 <= slot < len(controller.current_slides)):
                 return jsonify({"ok": False, "error": "invalid slot"}), 400
 
-            if slot in controller.current_marks:
-                controller.current_marks.remove(slot)
+            actual_path = controller.current_slides[slot].path
+            if path != actual_path:
+                return jsonify({"ok": False, "error": "stale"}), 409
+
+            if actual_path in controller.pending_exclusions:
+                controller.pending_exclusions.discard(actual_path)
+                controller.excluded_paths.discard(actual_path)
+                marked = False
             else:
-                controller.current_marks.add(slot)
-        return jsonify({"ok": True})
+                controller.pending_exclusions.add(actual_path)
+                controller.excluded_paths.add(actual_path)
+                controller.min_next_advance_time = time.time() + MARK_ADVANCE_DELAY_SECONDS
+                marked = True
 
-    @app.route("/api/settings", methods=["GET", "POST"])
-    def api_settings():
-        if request.method == "POST":
-            data = request.json or {}
-            if "shuffle_enabled" in data:
-                shuffle_enabled = bool(data["shuffle_enabled"])
-                with controller.lock:
-                    controller.shuffle_enabled = shuffle_enabled
+            controller.bump_version()
 
-                import json
-                with open(controller.settings_file, "w") as f:
-                    json.dump({"shuffle_enabled": shuffle_enabled}, f)
-
-        with controller.lock:
-            shuffle_enabled = controller.shuffle_enabled
-        return jsonify({"ok": True, "shuffle_enabled": shuffle_enabled})
+        return jsonify({"ok": True, "marked": marked})
 
     @app.route("/api/command", methods=["POST"])
     def api_command():
@@ -131,9 +221,8 @@ def create_app(controller: "SlideshowController") -> Flask:
     outline: none;
   }
 
-  .controls button.active {
-    background: #1a5dc9;
-    box-shadow: inset 0 0 0 3px #ffd166;
+  .controls button.wide {
+    grid-column: 1 / -1;
   }
 
   #status {
@@ -141,10 +230,8 @@ def create_app(controller: "SlideshowController") -> Flask:
     font-weight: bold;
   }
 
-  #settings-note {
-    margin: 0 0 16px 0;
-    color: #666;
-    font-size: 13px;
+  #status.flash {
+    color: #c0392b;
   }
 
   .slot {
@@ -158,30 +245,45 @@ def create_app(controller: "SlideshowController") -> Flask:
     border-color: red;
     background: #ffecec;
   }
+
+  .thumb {
+    display: block;
+    width: 100%;
+    max-width: 220px;
+    border-radius: 4px;
+    margin: 6px 0;
+  }
+
+  .path {
+    font-size: 11px;
+    color: #666;
+    word-break: break-all;
+    margin-bottom: 6px;
+  }
 </style>
 </head>
 <body>
     <div class="controls">
-      <button onclick="sendCommand('pause')">Pause</button>
-      <button onclick="sendCommand('play')">Play</button>
-    
+      <button id="btn-playpause" class="wide">Pause</button>
+
       <button onclick="sendCommand('prev', 1)"><<&nbsp;Prev</button>
       <button onclick="sendCommand('next', 1)">Next&nbsp;>></button>
-    
-      <button onclick="sendCommand('screen_off')">Screen Off</button>
-      <button onclick="sendCommand('screen_on')">Screen On</button>
 
-      <button id="btn-shuffle" onclick="setShuffleMode(true)">Shuffle</button>
-      <button id="btn-random-start" onclick="setShuffleMode(false)">Random Start</button>
+      <button id="btn-screen" class="wide">Screen Off</button>
     </div>
-  <div id="settings-note">Order takes effect next time the frame restarts.</div>
   <div id="status"></div>
   <div id="slots"></div>
 
 <script>
-async function refreshState() {
-  const res = await fetch('/api/state');
-  const data = await res.json();
+let latestVersion = 0;
+let latestPaused = false;
+let latestBlack = false;
+
+function renderState(data) {
+  latestVersion = data.version;
+  latestPaused = data.paused;
+  latestBlack = data.black;
+
   const slotsDiv = document.getElementById('slots');
   const statusDiv = document.getElementById('status');
 
@@ -189,28 +291,61 @@ async function refreshState() {
   if (data.black) status += " (SCREEN OFF)";
   statusDiv.textContent = "Status: " + status;
 
+  document.getElementById('btn-playpause').textContent = data.paused ? 'Play' : 'Pause';
+  document.getElementById('btn-screen').textContent = data.black ? 'Screen On' : 'Screen Off';
+
   slotsDiv.innerHTML = '';
   data.slides.forEach(slide => {
     const div = document.createElement('div');
     div.className = 'slot' + (slide.marked ? ' marked' : '');
-    div.innerHTML = `
-      <div><b>Slot ${slide.index + 1}</b></div>
-      <div>${slide.path}</div>
-      <button onclick="toggleMark(${slide.index})">
-        ${slide.marked ? 'Unmark' : 'Mark'}
-      </button>
-    `;
+
+    const label = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = 'Slot ' + (slide.index + 1);
+    label.appendChild(b);
+
+    const img = document.createElement('img');
+    img.className = 'thumb';
+    img.loading = 'lazy';
+    img.src = '/api/thumbnail?path=' + encodeURIComponent(slide.path);
+    img.alt = '';
+
+    const pathDiv = document.createElement('div');
+    pathDiv.className = 'path';
+    pathDiv.textContent = slide.path;
+
+    const btn = document.createElement('button');
+    btn.textContent = slide.marked ? 'Unmark' : 'Mark';
+    btn.onclick = () => toggleMark(slide.index, slide.path);
+
+    div.appendChild(label);
+    div.appendChild(img);
+    div.appendChild(pathDiv);
+    div.appendChild(btn);
     slotsDiv.appendChild(div);
   });
 }
 
-async function toggleMark(slot) {
-  await fetch('/api/mark', {
+function flashStatus(message) {
+  const statusDiv = document.getElementById('status');
+  const prevText = statusDiv.textContent;
+  statusDiv.textContent = message;
+  statusDiv.classList.add('flash');
+  setTimeout(() => {
+    statusDiv.textContent = prevText;
+    statusDiv.classList.remove('flash');
+  }, 1500);
+}
+
+async function toggleMark(slot, path) {
+  const res = await fetch('/api/mark', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({slot})
+    body: JSON.stringify({slot, path, expected_version: latestVersion})
   });
-  refreshState();
+  if (res.status === 409) {
+    flashStatus('Screen changed — try again');
+  }
 }
 
 async function sendCommand(cmd, steps) {
@@ -223,28 +358,23 @@ async function sendCommand(cmd, steps) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body)
   });
-  setTimeout(refreshState, 800);
 }
 
-async function refreshSettings() {
-  const res = await fetch('/api/settings');
-  const data = await res.json();
-  document.getElementById('btn-shuffle').classList.toggle('active', data.shuffle_enabled);
-  document.getElementById('btn-random-start').classList.toggle('active', !data.shuffle_enabled);
+document.getElementById('btn-playpause').onclick = () => sendCommand(latestPaused ? 'play' : 'pause');
+document.getElementById('btn-screen').onclick = () => sendCommand(latestBlack ? 'screen_on' : 'screen_off');
+
+async function initialLoad() {
+  const res = await fetch('/api/state');
+  renderState(await res.json());
 }
 
-async function setShuffleMode(shuffleEnabled) {
-  await fetch('/api/settings', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({shuffle_enabled: shuffleEnabled})
-  });
-  refreshSettings();
+function connectStream() {
+  const es = new EventSource('/api/stream');
+  es.onmessage = (e) => renderState(JSON.parse(e.data));
 }
 
-setInterval(refreshState, 3000);
-refreshState();
-refreshSettings();
+initialLoad();
+connectStream();
 </script>
 </body>
 </html>

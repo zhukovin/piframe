@@ -41,11 +41,37 @@ On your mobile device open this in your browser to control the slideshow:
 ```
 http://rpi:7654
 ```
-If you see a photo that you would rather skip next time, out it on pause, go back with Prev
-and mark that photo by its number. Next time this photo will be excluded.
+If you see a photo that you would rather skip next time, mark it (each slot shows a thumbnail
+so you can tell them apart) and hit Unmark to undo. A mark takes effect immediately, but only
+becomes permanent once that photo scrolls out of reach (the last few screens, via Prev) --
+until then, navigating back to it still shows it marked and Unmark reverses it. Marking also
+holds the current screen for a few extra seconds so it doesn't change out from under you.
+The page updates instantly (no manual refresh) as the frame advances.
 
 The screen goes automatically dark at 22:00 and goes back on at 7:00 in the morning.
 You can manually turn it on and off at any moment.
+
+## Configuration (`py-frame.conf`)
+
+An optional INI-style file, read once at startup:
+
+```
+[schedule]
+start = 22:00
+end = 7:00
+
+[display]
+shuffle = true
+```
+
+- `[schedule]` controls the night auto screen-off window (see above); a wrap-past-midnight
+  window like `22:00 -> 07:00` is supported.
+- `[display] shuffle` sets the photo display order: `true` fully randomizes it, `false` keeps
+  the list's original order but starts from a random point and wraps around. This replaced the
+  old web UI Shuffle/Random Start toggle -- it's config-only now, applied once at startup, so
+  restart `py-frame.service` after changing it.
+
+A missing file, section, or key falls back to sensible defaults rather than blocking startup.
 
 ## Install required Python libraries
 
