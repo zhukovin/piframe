@@ -1108,16 +1108,24 @@ def build_thumbnail_bytes(surface: pygame.Surface, width: int = THUMBNAIL_WIDTH)
     for the web UI. Must only be called from the thread that owns
     pygame's video context (the render_loop thread) -- pygame/SDL surface
     operations aren't guaranteed safe to call from another thread, which
-    is why this used to live in web_server.py's Flask request handler and
-    silently produced no image at all on at least one Pi.
+    is why this used to live in web_server.py's Flask request handler.
+
+    Encoded via Pillow (already a hard dependency, used by load_slide)
+    rather than pygame.image.save(..., "png"): saving PNG through pygame
+    requires the system's SDL_image to have been built with save support
+    (SDL_image >= 2.0.2), which isn't guaranteed on every Pi image --
+    Pillow bundles its own PNG encoder, so this works everywhere.
     """
     import io
 
     w, h = surface.get_width(), surface.get_height()
     scale = width / w
     thumb = pygame.transform.smoothscale(surface, (width, max(1, round(h * scale))))
+
+    raw = pygame.image.tostring(thumb, "RGB")
+    img = Image.frombytes("RGB", thumb.get_size(), raw)
     buf = io.BytesIO()
-    pygame.image.save(thumb, buf, "thumb.png")
+    img.save(buf, format="PNG")
     return buf.getvalue()
 
 

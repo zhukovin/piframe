@@ -331,7 +331,12 @@ function renderState(data) {
   grid.style.gridTemplateColumns = `repeat(${layout.columns}, 1fr)`;
   grid.style.gridTemplateRows = `repeat(${layout.rows}, 1fr)`;
 
-  layout.tiles.forEach(({ slide, col, row }) => {
+  // layoutTiles() builds `tiles` in the same order py_frame.py's
+  // compute_pattern_rects() builds its rects list (grouped by orientation
+  // for the PPLLL/PLLL patterns) -- number badges by *position in this
+  // array*, not by slide.index (raw current_slides order), so the number
+  // shown here matches the number drawn on the physical screen.
+  layout.tiles.forEach(({ slide, col, row }, position) => {
     const tile = document.createElement('div');
     tile.className = 'tile' + (slide.marked ? ' marked' : '');
     tile.style.gridColumn = col;
@@ -347,7 +352,7 @@ function renderState(data) {
 
     const badge = document.createElement('div');
     badge.className = 'badge';
-    badge.textContent = slide.marked ? 'MARKED' : String(slide.index + 1);
+    badge.textContent = slide.marked ? 'MARKED' : String(position + 1);
 
     tile.appendChild(img);
     tile.appendChild(badge);
