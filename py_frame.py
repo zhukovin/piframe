@@ -1511,7 +1511,13 @@ def render_loop(
                     current_background = build_blurred_background(
                         screen.get_size(), rects
                     )
-                    current_end_time = now + seconds_to_display
+                    # A fresh timestamp, not the `now` captured at the top
+                    # of this iteration -- building the background/rects
+                    # above can itself take a while on slower hardware, and
+                    # using the stale `now` would start the countdown
+                    # already partway elapsed once the screen actually
+                    # becomes visible a moment later.
+                    current_end_time = time.time() + seconds_to_display
 
                     with controller.lock:
                         controller.current_slides = current_slides
@@ -1607,7 +1613,9 @@ def render_loop(
                         current_background = build_blurred_background(
                             screen.get_size(), rects
                         )
-                        current_end_time = now + seconds_to_display
+                        # Fresh timestamp -- see comment on the equivalent
+                        # line in the backward branch above.
+                        current_end_time = time.time() + seconds_to_display
 
                         with controller.lock:
                             controller.current_slides = current_slides
