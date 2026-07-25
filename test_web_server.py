@@ -299,28 +299,20 @@ class TestWebServer:
 
         assert response.status_code == 400
 
-    def test_api_thumbnail_found_on_current_screen(self):
-        """Test /api/thumbnail returns image bytes for a currently-shown slide"""
-        self._add_current_slides(1)
+    def test_api_thumbnail_found(self):
+        """Test /api/thumbnail returns cached bytes for a known path.
+        render_loop (via update_thumbnail_cache) is the only thing that
+        ever populates thumbnail_cache -- this route is a pure read, with
+        no pygame/SDL calls of its own, so it's tested as such here."""
+        self.controller.thumbnail_cache["test0.jpg"] = b"fake-png-bytes"
         response = self.client.get('/api/thumbnail?path=test0.jpg')
 
         assert response.status_code == 200
         assert response.mimetype == 'image/png'
-        assert len(response.data) > 0
-
-    def test_api_thumbnail_found_in_history(self):
-        """Test /api/thumbnail falls back to scanning history for a photo
-        that's no longer on the current screen"""
-        old_slide = Slide(path="old.jpg", surface=pygame.Surface((40, 20)), orientation="L")
-        self.controller.history = [([old_slide], 0)]
-
-        response = self.client.get('/api/thumbnail?path=old.jpg')
-
-        assert response.status_code == 200
-        assert response.mimetype == 'image/png'
+        assert response.data == b"fake-png-bytes"
 
     def test_api_thumbnail_not_found(self):
-        """Test /api/thumbnail 404s for a path that isn't visible anywhere"""
+        """Test /api/thumbnail 404s for a path that isn't cached"""
         response = self.client.get('/api/thumbnail?path=nope.jpg')
 
         assert response.status_code == 404

@@ -5,6 +5,7 @@ This file extracts and runs existing tests from py_frame.py
 import pytest
 from collections import deque
 from itertools import product
+import io
 import pygame
 import os
 import sys
@@ -38,6 +39,8 @@ from py_frame import (
     finalize_exclusions,
     downscale_slide_to_screen,
     downscale_slides_to_screen,
+    build_thumbnail_bytes,
+    update_thumbnail_cache,
     read_file_list,
     image_fetcher_thread,
     log_load_measurement,
@@ -1002,6 +1005,92 @@ class TestDownscaleSlideToScreen:
         # Should remain the same
         assert slide.surface.get_width() == original_w
         assert slide.surface.get_height() == original_h
+
+
+class TestBuildThumbnailBytes:
+    """Test suite for build_thumbnail_bytes, which must only ever be
+    called from render_loop's thread -- it's the pygame/SDL surface work
+    that used to run in web_server.py's Flask thread and silently
+    produced no image on at least one Pi (untested cross-thread pygame
+    call). Kept here as a plain pygame-in, bytes-out function so it's
+    easy to unit test in isolation from any threading concerns."""
+
+    def setup_method(self):
+        pygame.init()
+        pygame.display.set_mode((1, 1))
+
+    def teardown_method(self):
+        pygame.quit()
+
+    def test_returns_valid_png_bytes(self):
+        surface = pygame.Surface((400, 300))
+        surface.fill((10, 20, 30))
+
+        data = build_thumbnail_bytes(surface, width=100)
+
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"  # PNG file signature
+
+    def test_scales_to_requested_width_preserving_aspect(self):
+        surface = pygame.Surface((400, 200))  # 2:1 aspect
+
+        data = build_thumbnail_bytes(surface, width=100)
+        result = pygame.image.load(io.BytesIO(data))
+
+        assert result.get_width() == 100
+        assert result.get_height() == 50  # 400x200 scaled to width 100
+
+
+class TestUpdateThumbnailCache:
+    """Test suite for update_thumbnail_cache: generates missing entries,
+    leaves already-cached ones alone, and prunes anything no longer
+    reachable via current_slides/history."""
+
+    def setup_method(self):
+        pygame.init()
+        pygame.display.set_mode((1, 1))
+        self.controller = SlideshowController()
+
+    def teardown_method(self):
+        pygame.quit()
+
+    def _slide(self, path, size=(40, 20), orientation="L"):
+        surf = pygame.Surface(size)
+        surf.fill((50, 60, 70))
+        return Slide(path=path, surface=surf, orientation=orientation)
+
+    def test_generates_thumbnail_for_new_slide(self):
+        slide = self._slide("a.jpg")
+
+        update_thumbnail_cache(self.controller, [slide])
+
+        assert "a.jpg" in self.controller.thumbnail_cache
+        assert self.controller.thumbnail_cache["a.jpg"][:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_does_not_regenerate_already_cached_path(self):
+        slide = self._slide("a.jpg")
+        self.controller.thumbnail_cache["a.jpg"] = b"already-there"
+
+        update_thumbnail_cache(self.controller, [slide])
+
+        assert self.controller.thumbnail_cache["a.jpg"] == b"already-there"
+
+    def test_prunes_paths_no_longer_visible(self):
+        self.controller.thumbnail_cache["gone.jpg"] = b"stale"
+        self.controller.history = []
+
+        update_thumbnail_cache(self.controller, [self._slide("current.jpg")])
+
+        assert "gone.jpg" not in self.controller.thumbnail_cache
+        assert "current.jpg" in self.controller.thumbnail_cache
+
+    def test_keeps_paths_still_in_history(self):
+        old_slide = self._slide("old.jpg")
+        self.controller.thumbnail_cache["old.jpg"] = b"still-good"
+        self.controller.history = [([old_slide], 0)]
+
+        update_thumbnail_cache(self.controller, [self._slide("current.jpg")])
+
+        assert self.controller.thumbnail_cache["old.jpg"] == b"still-good"
 
 
 class TestSetHdmiPower:

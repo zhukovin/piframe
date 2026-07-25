@@ -1,17 +1,14 @@
 # web_server.py
-import io
 import json
 import time
 from typing import TYPE_CHECKING
 
-import pygame
 from flask import Flask, Response, request, jsonify
 
 if TYPE_CHECKING:
     from py_frame import SlideshowController  # adjust import
 
 MARK_ADVANCE_DELAY_SECONDS = 5
-THUMBNAIL_WIDTH = 160
 
 
 def _parse_int_field(data: dict, key: str, default: int):
@@ -50,23 +47,6 @@ def build_state_payload(controller: "SlideshowController") -> dict:
     }
 
 
-def _find_slide_surface(controller: "SlideshowController", path: str):
-    """
-    Look up a Slide's already-decoded surface by path: first among the
-    slides on screen right now, then in history (most recent first) so a
-    thumbnail can still be fetched for a photo the user just navigated
-    away from. Must be called while holding controller.lock.
-    """
-    for s in controller.current_slides:
-        if s.path == path:
-            return s.surface
-    for slides, _ in reversed(controller.history):
-        for s in slides:
-            if s.path == path:
-                return s.surface
-    return None
-
-
 def create_app(controller: "SlideshowController") -> Flask:
     app = Flask(__name__)
 
@@ -97,31 +77,18 @@ def create_app(controller: "SlideshowController") -> Flask:
         if not path:
             return jsonify({"ok": False, "error": "missing path"}), 400
 
-        # Only the lookup needs the lock; the transform/encode below is
-        # CPU-bound and must not hold up render_loop, which also takes
-        # controller.lock every iteration.
+        # render_loop is the only thread that ever touches pygame/SDL
+        # surfaces (see update_thumbnail_cache in py_frame.py) -- this
+        # route just reads bytes it already encoded, so there's no pygame
+        # call here at all, and no cross-thread SDL risk.
         with controller.lock:
-            surface = _find_slide_surface(controller, path)
+            png_bytes = controller.thumbnail_cache.get(path)
 
-        if surface is None or surface.get_width() <= 0 or surface.get_height() <= 0:
+        if png_bytes is None:
             return jsonify({"ok": False, "error": "not found"}), 404
 
-        try:
-            w, h = surface.get_width(), surface.get_height()
-            scale = THUMBNAIL_WIDTH / w
-            thumb = pygame.transform.smoothscale(surface, (THUMBNAIL_WIDTH, max(1, round(h * scale))))
-            buf = io.BytesIO()
-            pygame.image.save(thumb, buf, "thumb.png")
-        except Exception:
-            # Logged (propagates to the same app_errors.log/journal as the
-            # rest of the app) rather than left as a silent broken-image
-            # icon in the browser -- this is the one spot most likely to
-            # hit an environment-specific pygame/SDL issue on the Pi.
-            app.logger.exception(f"Failed to build thumbnail for {path!r}")
-            return jsonify({"ok": False, "error": "render failed"}), 500
-
         return Response(
-            buf.getvalue(),
+            png_bytes,
             mimetype="image/png",
             headers={"Cache-Control": "max-age=300"},
         )

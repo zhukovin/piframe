@@ -30,6 +30,8 @@ seconds_to_display = 15
 
 MAX_HISTORY_SCREENS = 5  # or 20, tune as you like
 
+THUMBNAIL_WIDTH = 160  # px, for the web UI's per-slide preview images
+
 
 def log_mem(tag=""):
     usage = resource.getrusage(resource.RUSAGE_SELF)
@@ -153,6 +155,13 @@ class SlideshowController:
         # out from under the user right after they mark something. Manual
         # Next/Prev bypass this like they bypass current_end_time.
         self.min_next_advance_time: float = 0.0
+
+        # path -> encoded PNG bytes for the web UI's per-slide thumbnails.
+        # Populated by render_loop (see update_thumbnail_cache), the only
+        # thread that's safe to call pygame/SDL surface functions from --
+        # web_server's Flask thread just reads this dict, so no pygame
+        # calls ever happen off the render thread.
+        self.thumbnail_cache: dict[str, bytes] = {}
 
     def bump_version(self):
         """
@@ -1093,6 +1102,53 @@ def downscale_slides_to_screen(slides: list[Slide], max_w: int, max_h: int):
         downscale_slide_to_screen(s, max_w, max_h)
 
 
+def build_thumbnail_bytes(surface: pygame.Surface, width: int = THUMBNAIL_WIDTH) -> bytes:
+    """
+    Downscale an already-decoded slide surface into a small encoded PNG
+    for the web UI. Must only be called from the thread that owns
+    pygame's video context (the render_loop thread) -- pygame/SDL surface
+    operations aren't guaranteed safe to call from another thread, which
+    is why this used to live in web_server.py's Flask request handler and
+    silently produced no image at all on at least one Pi.
+    """
+    import io
+
+    w, h = surface.get_width(), surface.get_height()
+    scale = width / w
+    thumb = pygame.transform.smoothscale(surface, (width, max(1, round(h * scale))))
+    buf = io.BytesIO()
+    pygame.image.save(thumb, buf, "thumb.png")
+    return buf.getvalue()
+
+
+def update_thumbnail_cache(controller: SlideshowController, slides: list[Slide]):
+    """
+    Generate and cache a thumbnail for any of `slides` not already in
+    controller.thumbnail_cache, then drop cached entries for paths no
+    longer reachable via current_slides or history, so the cache stays
+    small over a long-running slideshow. Called from render_loop right
+    after a new screen is chosen.
+    """
+    with controller.lock:
+        already_cached = set(controller.thumbnail_cache)
+    to_generate = [s for s in slides if s.path not in already_cached]
+
+    new_thumbs: dict[str, bytes] = {}
+    for s in to_generate:
+        try:
+            new_thumbs[s.path] = build_thumbnail_bytes(s.surface)
+        except Exception:
+            logger.warning(f"Failed to build thumbnail for {s.path!r}", exc_info=True)
+
+    with controller.lock:
+        controller.thumbnail_cache.update(new_thumbs)
+        visible_paths = {s.path for s in slides}
+        for hist_slides, _ in controller.history:
+            visible_paths.update(s.path for s in hist_slides)
+        for stale_path in [p for p in controller.thumbnail_cache if p not in visible_paths]:
+            del controller.thumbnail_cache[stale_path]
+
+
 def render_loop(
         dq: deque[Slide],
         lock: threading.Lock,
@@ -1331,6 +1387,7 @@ def render_loop(
                         screen.get_size(), rects
                     )
                     current_end_time = now + seconds_to_display
+                    update_thumbnail_cache(controller, current_slides)
 
                     with controller.lock:
                         controller.current_slides = current_slides
@@ -1426,6 +1483,7 @@ def render_loop(
                             screen.get_size(), rects
                         )
                         current_end_time = now + seconds_to_display
+                        update_thumbnail_cache(controller, current_slides)
 
                         with controller.lock:
                             controller.current_slides = current_slides
