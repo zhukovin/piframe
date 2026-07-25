@@ -375,6 +375,8 @@ class TestWebServer:
         assert '/api/stream' in html
         assert 'tickAdvanceBar' in html
         assert 'advance-bar-fill' in html
+        assert 'attachTapHandlers' in html
+        assert 'copyPathToClipboard' in html
         assert '/api/exclusion-icon' in html
 
 

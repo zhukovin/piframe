@@ -263,10 +263,16 @@ def create_app(controller: "SlideshowController") -> Flask:
     border: 3px solid transparent;
     cursor: pointer;
     background: #222;
+    user-select: none;
+    -webkit-user-select: none;
   }
 
   .tile.marked {
     border-color: #e63946;
+  }
+
+  .tile.pressing {
+    filter: brightness(0.6);
   }
 
   .tile .thumb {
@@ -445,7 +451,11 @@ function renderState(data) {
     tile.style.gridColumn = col;
     tile.style.gridRow = row;
     tile.title = slide.path;
-    tile.onclick = () => toggleMark(slide.index, slide.path);
+    attachTapHandlers(
+      tile,
+      () => toggleMark(slide.index, slide.path),
+      () => copyPathToClipboard(slide.path),
+    );
 
     const img = document.createElement('img');
     img.className = 'thumb';
@@ -471,6 +481,106 @@ function renderState(data) {
 
   slotsDiv.innerHTML = '';
   slotsDiv.appendChild(grid);
+}
+
+const LONG_PRESS_MS = 550;
+
+// A short tap toggles the mark; a long press (touch or mouse-held) copies
+// the photo's path instead. Both share one press/release state machine
+// rather than a native click listener, since ordering a click handler
+// against a synthetic touch-then-click sequence is unreliable -- this
+// way onTap only ever fires from a genuinely short, unmoved press.
+function attachTapHandlers(el, onTap, onLongPress) {
+  let timer = null;
+  let firedLongPress = false;
+  let moved = false;
+
+  function start() {
+    // Touch devices often fire a synthetic mousedown shortly after
+    // touchstart -- clear any timer that's already running instead of
+    // leaking it (overwriting `timer` below without this would make the
+    // first one uncancelable, firing onLongPress a second time later).
+    clearTimer();
+    firedLongPress = false;
+    moved = false;
+    el.classList.add('pressing');
+    timer = setTimeout(() => {
+      firedLongPress = true;
+      timer = null;
+      el.classList.remove('pressing');
+      onLongPress();
+    }, LONG_PRESS_MS);
+  }
+
+  function clearTimer() {
+    el.classList.remove('pressing');
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+
+  function onMove() {
+    moved = true;
+    clearTimer();
+  }
+
+  function end() {
+    const wasLongPress = firedLongPress;
+    clearTimer();
+    if (!wasLongPress && !moved) {
+      onTap();
+    }
+  }
+
+  el.addEventListener('touchstart', start, { passive: true });
+  el.addEventListener('touchend', end);
+  el.addEventListener('touchmove', onMove, { passive: true });
+  el.addEventListener('touchcancel', clearTimer);
+
+  el.addEventListener('mousedown', start);
+  el.addEventListener('mouseup', end);
+  el.addEventListener('mouseleave', clearTimer);
+}
+
+function copyPathToClipboard(path) {
+  if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
+    navigator.clipboard.writeText(path).then(
+      () => flashStatus('Path copied'),
+      () => legacyCopyToClipboard(path),
+    );
+  } else {
+    // navigator.clipboard requires a secure context (https, or
+    // localhost) -- this page is normally loaded over plain http on the
+    // LAN, so that API is unavailable and we fall back to the older
+    // execCommand technique.
+    legacyCopyToClipboard(path);
+  }
+}
+
+function legacyCopyToClipboard(path) {
+  const textarea = document.createElement('textarea');
+  textarea.value = path;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch (e) {
+    ok = false;
+  }
+  document.body.removeChild(textarea);
+
+  if (ok) {
+    flashStatus('Path copied');
+  } else {
+    // Last resort so the user isn't left with nothing -- the prompt's
+    // text is pre-selected, so it's still a one-tap manual copy.
+    window.prompt('Copy path:', path);
+  }
 }
 
 function flashStatus(message) {
