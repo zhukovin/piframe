@@ -116,19 +116,24 @@ class TestWebServer:
         assert "test1.jpg" not in self.controller.pending_exclusions
         assert "test1.jpg" not in self.controller.excluded_paths
 
-    def test_api_mark_sets_advance_delay_only_on_fresh_mark(self):
-        """Marking (not unmarking) should push min_next_advance_time out
-        a few seconds so the screen doesn't change mid-decision"""
+    def test_api_mark_pauses_on_fresh_mark(self):
+        """Marking a photo should pause the slideshow so the screen
+        doesn't change out from under the user mid-review; they resume
+        manually via Play when done"""
         self._add_current_slides(1)
-        assert self.controller.min_next_advance_time == 0.0
+        assert self.controller.paused is False
 
         self._mark(0, "test0.jpg")
-        assert self.controller.min_next_advance_time > 0.0
+        assert self.controller.paused is True
 
-        delay_after_mark = self.controller.min_next_advance_time
-        self.controller.min_next_advance_time = 0.0  # reset to detect unmark behavior
-        self._mark(0, "test0.jpg")  # this call unmarks
-        assert self.controller.min_next_advance_time == 0.0
+    def test_api_mark_unmark_does_not_auto_resume(self):
+        """Unmarking shouldn't un-pause -- resuming is always manual"""
+        self._add_current_slides(1)
+        self._mark(0, "test0.jpg")  # marks, and pauses
+        assert self.controller.paused is True
+
+        self._mark(0, "test0.jpg")  # unmarks
+        assert self.controller.paused is True
 
     def test_api_mark_stale_version_rejected(self):
         """A mark request against an outdated version must be rejected

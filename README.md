@@ -44,9 +44,10 @@ http://rpi:7654
 If you see a photo that you would rather skip next time, mark it (each slot shows a thumbnail
 so you can tell them apart) and hit Unmark to undo. A mark takes effect immediately, but only
 becomes permanent once that photo scrolls out of reach (the last few screens, via Prev) --
-until then, navigating back to it still shows it marked and Unmark reverses it. Marking also
-holds the current screen for a few extra seconds so it doesn't change out from under you.
-The page updates instantly (no manual refresh) as the frame advances.
+until then, navigating back to it still shows it marked and Unmark reverses it. Marking a photo
+automatically pauses the slideshow, so it won't change out from under you while you're
+reviewing/marking -- hit Play when you're done to resume. The page updates instantly (no
+manual refresh) as the frame advances.
 
 The screen goes automatically dark at 22:00 and goes back on at 7:00 in the morning.
 You can manually turn it on and off at any moment.

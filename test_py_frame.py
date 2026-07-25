@@ -138,7 +138,7 @@ class TestSlideshowController:
         assert controller.download_bytes_per_sec is None
         assert controller.measurements_file == "load_measurements.csv"
         assert controller.state_version == 0
-        assert controller.min_next_advance_time == 0.0
+        assert controller.thumbnail_cache == {}
 
     def test_pending_exclusions_management(self):
         """Test marking and unmarking paths as pending exclusion"""

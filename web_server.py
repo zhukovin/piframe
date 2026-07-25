@@ -1,14 +1,11 @@
 # web_server.py
 import json
-import time
 from typing import TYPE_CHECKING
 
 from flask import Flask, Response, request, jsonify
 
 if TYPE_CHECKING:
     from py_frame import SlideshowController  # adjust import
-
-MARK_ADVANCE_DELAY_SECONDS = 5
 
 
 def _parse_int_field(data: dict, key: str, default: int):
@@ -126,7 +123,10 @@ def create_app(controller: "SlideshowController") -> Flask:
             else:
                 controller.pending_exclusions.add(actual_path)
                 controller.excluded_paths.add(actual_path)
-                controller.min_next_advance_time = time.time() + MARK_ADVANCE_DELAY_SECONDS
+                # Marking pauses the slideshow so the screen doesn't change
+                # out from under the user mid-review -- they resume
+                # manually (Play) once they're done marking.
+                controller.paused = True
                 marked = True
 
             controller.bump_version()

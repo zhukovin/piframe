@@ -150,12 +150,6 @@ class SlideshowController:
         # against an outdated screen) and the SSE stream knows when to push.
         self.state_version: int = 0
 
-        # When a mark is added (not removed), render_loop holds off the
-        # *automatic* advance until this time, so the screen doesn't change
-        # out from under the user right after they mark something. Manual
-        # Next/Prev bypass this like they bypass current_end_time.
-        self.min_next_advance_time: float = 0.0
-
         # path -> encoded PNG bytes for the web UI's per-slide thumbnails.
         # Populated by render_loop (see update_thumbnail_cache), the only
         # thread that's safe to call pygame/SDL surface functions from --
@@ -1259,7 +1253,6 @@ def render_loop(
             paused = controller.paused
             black_screen = controller.black_screen
             pending_exclusions_snapshot = set(controller.pending_exclusions)
-            min_next_advance_time = controller.min_next_advance_time
             drive_ok = controller.drive_ok
             download_bytes_per_sec = controller.download_bytes_per_sec
 
@@ -1318,15 +1311,10 @@ def render_loop(
         elif force_next:
             need_advance = True
             backward = False
-        elif (not current_slides) or (
-                now >= max(current_end_time, min_next_advance_time)
-                and not paused and not black_screen
-        ):
-            # auto-advance only if not paused and not in black-screen mode.
-            # min_next_advance_time holds the auto-advance off for a few
-            # seconds right after a fresh mark, so the screen doesn't change
-            # out from under the user mid-decision (manual Next/Prev above
-            # still bypass this entirely, same as they bypass current_end_time).
+        elif (not current_slides) or (now >= current_end_time and not paused and not black_screen):
+            # auto-advance only if not paused and not in black-screen mode
+            # (marking a photo pauses via /api/mark, so this naturally
+            # holds still while the user is reviewing/marking).
             need_advance = True
             backward = False
 
