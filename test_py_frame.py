@@ -1039,6 +1039,22 @@ class TestBuildThumbnailBytes:
         assert result.get_width() == 100
         assert result.get_height() == 50  # 400x200 scaled to width 100
 
+    def test_handles_non_24_32_bit_surface(self):
+        """Regression test: some real-world photos decode into a Slide
+        surface that isn't 24/32-bit (observed live: an 8-bit source
+        raised "ValueError: Only 24-bit or 32-bit surfaces can be
+        smoothly scaled" from a raw pygame.transform.smoothscale call).
+        The rest of the codebase already handles this via
+        smoothscale_safe() (used for the on-screen render path); this
+        must go through the same helper instead of calling
+        pygame.transform.smoothscale directly."""
+        surface = pygame.Surface((400, 300), depth=8)
+        assert surface.get_bitsize() == 8
+
+        data = build_thumbnail_bytes(surface, width=100)
+
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"
+
 
 class TestUpdateThumbnailCache:
     """Test suite for update_thumbnail_cache: generates missing entries,

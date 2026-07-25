@@ -1114,7 +1114,7 @@ def build_thumbnail_bytes(surface: pygame.Surface, width: int = THUMBNAIL_WIDTH)
 
     w, h = surface.get_width(), surface.get_height()
     scale = width / w
-    thumb = pygame.transform.smoothscale(surface, (width, max(1, round(h * scale))))
+    thumb = smoothscale_safe(surface, (width, max(1, round(h * scale))))
 
     raw = pygame.image.tostring(thumb, "RGB")
     img = Image.frombytes("RGB", thumb.get_size(), raw)
