@@ -378,6 +378,7 @@ class TestWebServer:
         assert 'attachTapHandlers' in html
         assert 'copyPathToClipboard' in html
         assert '/api/exclusion-icon' in html
+        assert 'fitGalleryToViewport' in html
 
 
 class TestApiStream:

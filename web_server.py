@@ -187,12 +187,23 @@ def create_app(controller: "SlideshowController") -> Flask:
   <title>Frame Control</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
+  html {
+    height: 100%;
+  }
+
   body {
     font-family: sans-serif;
-    margin: 10px;
+    padding: 10px;
+    margin: 0;
+    box-sizing: border-box;
+    height: 100vh;
+    height: 100dvh;   /* excludes mobile browser chrome that 100vh includes */
+    display: flex;
+    flex-direction: column;
   }
 
   .controls {
+    flex: 0 0 auto;
     display: grid;
     grid-template-columns: 1fr 1fr;   /* 2 buttons per row */
     gap: 12px;
@@ -222,6 +233,7 @@ def create_app(controller: "SlideshowController") -> Flask:
   }
 
   #status {
+    flex: 0 0 auto;
     margin: 10px 0;
     font-weight: bold;
   }
@@ -231,6 +243,7 @@ def create_app(controller: "SlideshowController") -> Flask:
   }
 
   #advance-bar-track {
+    flex: 0 0 auto;
     height: 6px;
     border-radius: 3px;
     background: #e0e0e0;
@@ -249,11 +262,26 @@ def create_app(controller: "SlideshowController") -> Flask:
     transition: width 0.2s linear;
   }
 
+  /* Takes whatever vertical space is left after the controls/status/bar
+     above. The gallery inside is sized in JS (fitGalleryToViewport) to
+     fit both this area's width AND height -- full width when there's
+     enough height for it (phones), shrunk to fit height otherwise
+     (short wide desktop windows) instead of overflowing into a scroll. */
+  #slots {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    overflow: hidden;
+  }
+
   .pattern-grid {
     display: grid;
     gap: 4px;
     aspect-ratio: 16 / 9;
-    margin-bottom: 12px;
+    max-width: 100%;
+    max-height: 100%;
   }
 
   .tile {
@@ -472,7 +500,36 @@ function renderState(data) {
 
   slotsDiv.innerHTML = '';
   slotsDiv.appendChild(grid);
+  fitGalleryToViewport();
 }
+
+// #slots (flex: 1 1 auto) already gets exactly the leftover space below
+// the controls/status/progress bar. Size .pattern-grid to fit within
+// that space at its 16:9 ratio: full width if the resulting height fits
+// (phones, where there's normally plenty of vertical room), otherwise
+// shrunk to the available height instead of overflowing into a scroll
+// (wide, short desktop browser windows).
+function fitGalleryToViewport() {
+  const wrap = document.getElementById('slots');
+  const grid = wrap.querySelector('.pattern-grid');
+  if (!grid) return;
+
+  const availW = wrap.clientWidth;
+  const availH = wrap.clientHeight;
+  if (availW <= 0 || availH <= 0) return;
+
+  const RATIO = 16 / 9;
+  let w = availW;
+  let h = w / RATIO;
+  if (h > availH) {
+    h = availH;
+    w = h * RATIO;
+  }
+  grid.style.width = w + 'px';
+  grid.style.height = h + 'px';
+}
+
+window.addEventListener('resize', fitGalleryToViewport);
 
 const LONG_PRESS_MS = 550;
 
