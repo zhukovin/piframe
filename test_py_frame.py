@@ -1394,6 +1394,28 @@ class TestUpdateThumbnailCache:
         update_thumbnail_cache(self.controller, slides, max_to_generate=1)
         assert set(self.controller.thumbnail_cache) == {s.path for s in slides}
 
+    def test_prioritizes_current_screen_over_prewarmed_upcoming_slides(self):
+        """Regression test: render_loop only ever pre-generated the
+        currently-displayed screen's thumbnails, so every single screen
+        change started from zero cached thumbnails -- visible in the
+        browser as a burst of 404s that then resolved on retry. Passing
+        the fetcher's buffered-ahead slides too (in addition to
+        current_slides) lets idle iterations pre-warm them before they're
+        ever shown, as long as the currently-displayed screen still comes
+        first in priority."""
+        current_slides = [self._slide("shown_now.jpg")]
+        upcoming = [self._slide(f"buffered{i}.jpg") for i in range(4)]
+
+        update_thumbnail_cache(self.controller, current_slides + upcoming, max_to_generate=1)
+        assert set(self.controller.thumbnail_cache) == {"shown_now.jpg"}
+
+        for _ in range(4):
+            update_thumbnail_cache(self.controller, current_slides + upcoming, max_to_generate=1)
+
+        assert set(self.controller.thumbnail_cache) == {
+            "shown_now.jpg", "buffered0.jpg", "buffered1.jpg", "buffered2.jpg", "buffered3.jpg",
+        }
+
 
 class TestSetHdmiPower:
     """Test suite for set_hdmi_power, which cuts/restores the physical HDMI

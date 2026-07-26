@@ -1422,13 +1422,19 @@ def render_loop(
                 paused = False
                 set_hdmi_power(True)
 
-        # Fill in the current screen's thumbnails a little at a time, one
-        # per iteration, rather than as one blocking batch when the screen
-        # first appears -- keeps the loop responsive to pause/mark/next/
-        # prev even while a multi-photo screen's thumbnails are still
-        # being generated (see update_thumbnail_cache's docstring).
-        if current_slides:
-            update_thumbnail_cache(controller, current_slides, max_to_generate=1)
+        # Fill in thumbnails a little at a time, one per iteration, rather
+        # than as one blocking batch (see update_thumbnail_cache's
+        # docstring). Prioritize the currently-displayed screen, but also
+        # include whatever's already buffered in the fetcher's deque --
+        # pre-warming those during the many idle iterations of a normal
+        # ~15s display window means a photo's thumbnail is usually already
+        # cached by the time it's actually shown, instead of every single
+        # screen change starting from zero cached thumbnails (visible in
+        # the browser as a burst of 404s that then resolve on retry).
+        if current_slides or dq:
+            with not_full:
+                upcoming = list(dq)
+            update_thumbnail_cache(controller, current_slides + upcoming, max_to_generate=1)
 
         # --- Decide if slideshow should advance ---
         need_advance = False
