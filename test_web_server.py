@@ -330,12 +330,12 @@ class TestWebServer:
         assert response.status_code == 400
 
     def test_api_exclusion_icon_served(self):
-        """Test /api/exclusion-icon serves the placeholder overlay image
-        (pictures/dont-show-icon.jpeg) shown over marked tiles"""
+        """Test /api/exclusion-icon serves the overlay image
+        (pictures/eye-dont-show.png) shown over marked tiles"""
         response = self.client.get('/api/exclusion-icon')
 
         assert response.status_code == 200
-        assert response.mimetype == 'image/jpeg'
+        assert response.mimetype == 'image/png'
         assert len(response.data) > 0
 
     def test_index_page(self):

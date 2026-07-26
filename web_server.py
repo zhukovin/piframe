@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 # Must match py_frame.EXCLUSION_ICON_PATH (kept as a separate literal here,
 # rather than importing it, to avoid a circular import with py_frame --
 # py_frame imports run_web from this module at load time).
-EXCLUSION_ICON_PATH = "pictures/dont-show-icon.jpeg"
+EXCLUSION_ICON_PATH = "pictures/eye-dont-show.png"
 
 
 def _parse_int_field(data: dict, key: str, default: int):
@@ -106,11 +106,11 @@ def create_app(controller: "SlideshowController") -> Flask:
 
     @app.route("/api/exclusion-icon")
     def api_exclusion_icon():
-        # Same placeholder icon drawn over a marked photo on the physical
-        # screen (see draw_exclusion_overlay in py_frame.py), served as-is
-        # for the web UI to overlay on marked tiles too.
+        # Same icon drawn over a marked photo on the physical screen (see
+        # draw_exclusion_overlay in py_frame.py), served as-is for the web
+        # UI to overlay on marked tiles too.
         try:
-            return send_file(EXCLUSION_ICON_PATH, mimetype="image/jpeg")
+            return send_file(EXCLUSION_ICON_PATH, mimetype="image/png")
         except OSError:
             return jsonify({"ok": False, "error": "not found"}), 404
 

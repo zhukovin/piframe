@@ -746,7 +746,7 @@ class TestDrawSlotOverlay:
 
 class TestDrawExclusionOverlay:
     """Test suite for draw_exclusion_overlay, the icon shown over a marked
-    photo (pictures/dont-show-icon.jpeg) in place of the old colored
+    photo (pictures/eye-dont-show.png) in place of the old colored
     border, and for the missing-file fallback."""
 
     def setup_method(self):
@@ -773,18 +773,17 @@ class TestDrawExclusionOverlay:
         }
         assert len(colors) > 1, "expected the icon to have drawn something over the background"
 
-    def test_background_still_shows_through_via_colorkey(self):
-        """Test that the icon's white background is keyed out rather than
-        painted as an opaque square over the photo"""
+    def test_background_still_shows_through_via_alpha(self):
+        """Test that the icon's transparent margin lets the photo show
+        through rather than painting an opaque square over it -- the icon
+        is scaled to ~40% of the rect and centered, so a large rect's
+        corners should be untouched background, not icon pixels"""
         screen = pygame.Surface((300, 300))
         screen.fill((10, 20, 30))
         rect = pygame.Rect(0, 0, 300, 300)
 
         draw_exclusion_overlay(screen, rect)
 
-        # Corners of the icon's bounding box are background in the source
-        # artwork (a roughly circular/eye shape) -- background color
-        # should still be visible there, not solid white.
         corner = screen.get_at((rect.x + 2, rect.y + 2))[:3]
         assert corner == (10, 20, 30)
 

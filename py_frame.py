@@ -559,11 +559,11 @@ def blit_scaled(surface: pygame.Surface, img: pygame.Surface, target_rect: pygam
     surface.blit(scaled, (x, y))
 
 
-# Placeholder exclusion-marker icon (a simple "don't show" eye/slash), shown
-# as an overlay over a marked photo instead of a colored border. Path is
-# cwd-relative like the app's other file paths (exclusions_file, etc.) --
-# expected to be run from the repo root, same as everywhere else.
-EXCLUSION_ICON_PATH = "pictures/dont-show-icon.jpeg"
+# Exclusion-marker icon (a "no eye" glyph), shown as an overlay over a
+# marked photo instead of a colored border. Path is cwd-relative like the
+# app's other file paths (exclusions_file, etc.) -- expected to be run
+# from the repo root, same as everywhere else.
+EXCLUSION_ICON_PATH = "pictures/eye-dont-show.png"
 
 _exclusion_icon_original: Optional[pygame.Surface] = None
 _exclusion_icon_load_attempted = False
@@ -580,14 +580,11 @@ def _load_exclusion_icon() -> Optional[pygame.Surface]:
     if not _exclusion_icon_load_attempted:
         _exclusion_icon_load_attempted = True
         try:
-            icon = pygame.image.load(EXCLUSION_ICON_PATH).convert()
-            # The placeholder icon is black artwork on a flat white
-            # background -- keying out white lets it overlay the photo
-            # instead of covering it with a white square. Approximate for
-            # now (JPEG compression leaves a faint halo); fine for a
-            # placeholder that's getting replaced later.
-            icon.set_colorkey((255, 255, 255))
-            _exclusion_icon_original = icon
+            # convert_alpha() (not convert()) since the icon is a PNG with
+            # real per-pixel transparency (a soft glow fading to
+            # transparent at the edges) -- this preserves that alpha
+            # channel, which a plain convert() would flatten away.
+            _exclusion_icon_original = pygame.image.load(EXCLUSION_ICON_PATH).convert_alpha()
         except Exception:
             logger.warning(f"Could not load exclusion icon from {EXCLUSION_ICON_PATH!r}", exc_info=True)
             _exclusion_icon_original = None
@@ -614,11 +611,9 @@ def draw_exclusion_overlay(screen: pygame.Surface, rect: pygame.Rect):
             return
         scale = target_edge / max(iw, ih)
         scaled = smoothscale_safe(icon, (max(1, int(iw * scale)), max(1, int(ih * scale))))
-        # pygame.transform functions don't carry a source surface's
-        # colorkey over to their output, so it has to be re-applied here
-        # (not just on the unscaled original) or the white background
-        # would render as an opaque square instead of showing through.
-        scaled.set_colorkey((255, 255, 255))
+        # Unlike colorkey, real per-pixel alpha (from convert_alpha()
+        # above) survives pygame.transform functions and blit()'s default
+        # blending, so no extra step is needed here to preserve it.
         _exclusion_icon_scaled_cache[target_edge] = scaled
 
     if scaled is None:
