@@ -260,15 +260,10 @@ def create_app(controller: "SlideshowController") -> Flask:
     position: relative;
     overflow: hidden;
     border-radius: 4px;
-    border: 3px solid transparent;
     cursor: pointer;
     background: #222;
     user-select: none;
     -webkit-user-select: none;
-  }
-
-  .tile.marked {
-    border-color: #e63946;
   }
 
   .tile.pressing {
@@ -292,10 +287,6 @@ def create_app(controller: "SlideshowController") -> Flask:
     padding: 2px 6px;
     border-radius: 4px;
     pointer-events: none;
-  }
-
-  .tile.marked .badge {
-    background: #e63946;
   }
 
   .tile .exclusion-icon {
@@ -447,7 +438,7 @@ function renderState(data) {
   // shown here matches the number drawn on the physical screen.
   layout.tiles.forEach(({ slide, col, row }, position) => {
     const tile = document.createElement('div');
-    tile.className = 'tile' + (slide.marked ? ' marked' : '');
+    tile.className = 'tile';
     tile.style.gridColumn = col;
     tile.style.gridRow = row;
     tile.title = slide.path;
@@ -465,7 +456,7 @@ function renderState(data) {
 
     const badge = document.createElement('div');
     badge.className = 'badge';
-    badge.textContent = slide.marked ? 'MARKED' : String(position + 1);
+    badge.textContent = String(position + 1);
 
     tile.appendChild(img);
     if (slide.marked) {
