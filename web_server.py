@@ -503,19 +503,29 @@ function renderState(data) {
   fitGalleryToViewport();
 }
 
-// #slots (flex: 1 1 auto) already gets exactly the leftover space below
-// the controls/status/progress bar. Size .pattern-grid to fit within
-// that space at its 16:9 ratio: full width if the resulting height fits
-// (phones, where there's normally plenty of vertical room), otherwise
-// shrunk to the available height instead of overflowing into a scroll
-// (wide, short desktop browser windows).
+// Size .pattern-grid to fit within whatever space is left below the
+// controls/status/progress bar, at its 16:9 ratio: full width if the
+// resulting height fits (phones, where there's normally plenty of
+// vertical room), shrunk to the available height otherwise (wide, short
+// desktop browser windows) instead of overflowing into a page scroll.
+//
+// Available height is measured directly from the viewport (where #slots
+// starts, down to the bottom of the window) rather than trusting
+// #slots's own computed clientHeight -- #slots is a flex:1 1 auto item
+// relying on min-height:0 to be allowed to shrink below its content's
+// natural size, which is exactly the size we're trying to determine, so
+// measuring clientHeight here is circular and unreliable across browsers.
 function fitGalleryToViewport() {
   const wrap = document.getElementById('slots');
   const grid = wrap.querySelector('.pattern-grid');
   if (!grid) return;
 
+  const wrapTop = wrap.getBoundingClientRect().top;
+  const bodyStyle = getComputedStyle(document.body);
+  const bottomPadding = parseFloat(bodyStyle.paddingBottom) || 0;
+
   const availW = wrap.clientWidth;
-  const availH = wrap.clientHeight;
+  const availH = window.innerHeight - wrapTop - bottomPadding;
   if (availW <= 0 || availH <= 0) return;
 
   const RATIO = 16 / 9;
