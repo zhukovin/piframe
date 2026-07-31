@@ -590,7 +590,19 @@ function attachTapHandlers(el, onTap, onLongPress) {
     clearTimer();
   }
 
-  function end() {
+  function end(event) {
+    if (event && event.type === 'touchend') {
+      // Stops the browser from following up this touch with a synthetic
+      // mousedown/mouseup/click a moment later. Without this, a single
+      // tap on a touch device fires onTap() TWICE (once from touch,
+      // once from the synthesized mouse events) -- for a mark/unmark
+      // toggle, the second call either races the first one's response
+      // and gets rejected as stale ("Screen changed -- try again"), or
+      // succeeds and immediately undoes the first toggle. Both were
+      // observed live on Android Chrome; neither reproduces on desktop
+      // since there's no synthetic mouse layer there.
+      event.preventDefault();
+    }
     const wasLongPress = firedLongPress;
     clearTimer();
     if (!wasLongPress && !moved) {
