@@ -1,2 +1,2 @@
 git pull --ff-only
-sudo systemctl restart py-frame.service
+sudo systemctl restart piframe.service

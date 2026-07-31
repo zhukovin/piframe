@@ -23,23 +23,17 @@ This project includes a comprehensive test suite with **70% coverage** and **48 
 pip3 install -r requirements.txt
 
 # Run tests
-pytest test_py_frame.py test_web_server.py -v
+pytest test_piframe.py test_web_server.py -v
 
 # View coverage report
 pytest --cov=. --cov-report=html
 open htmlcov/index.html
 ```
 
-**Documentation:**
-- [TESTING_QUICKSTART.md](TESTING_QUICKSTART.md) - Quick guide for running tests
-- [TESTING.md](TESTING.md) - Complete coverage analysis
-- [COVERAGE_SUMMARY.md](COVERAGE_SUMMARY.md) - Visual coverage overview
-- [FINAL_REPORT.md](FINAL_REPORT.md) - Executive summary
-
 ## How to use the photo frame
 On your mobile device open this in your browser to control the slideshow:
 ```
-http://rpi:7654
+http://piframe:7654
 ```
 If you see a photo that you would rather skip next time, mark it (each slot shows a thumbnail
 so you can tell them apart) and hit Unmark to undo. A mark takes effect immediately, but only
@@ -52,7 +46,7 @@ manual refresh) as the frame advances.
 The screen goes automatically dark at 22:00 and goes back on at 7:00 in the morning.
 You can manually turn it on and off at any moment.
 
-## Configuration (`py-frame.conf`)
+## Configuration (`piframe.conf`)
 
 An optional INI-style file, read once at startup:
 
@@ -70,7 +64,7 @@ shuffle = true
 - `[display] shuffle` sets the photo display order: `true` fully randomizes it, `false` keeps
   the list's original order but starts from a random point and wraps around. This replaced the
   old web UI Shuffle/Random Start toggle -- it's config-only now, applied once at startup, so
-  restart `py-frame.service` after changing it.
+  restart `piframe.service` after changing it.
 
 A missing file, section, or key falls back to sensible defaults rather than blocking startup.
 
@@ -95,17 +89,17 @@ pip3 install pytest pytest-cov coverage
 
 Clone the repo directly into the target folder:
 ```
-git clone https://github.com/zhukovin/py-frame.git ~/py-frame
-cd ~/py-frame
+git clone https://github.com/zhukovin/piframe.git ~/piframe
+cd ~/piframe
 ```
 
 No SSH keys or GitHub auth needed — the repo is public and the RPi only ever pulls, never pushes.
 
 ### Updating the code later
 ```
-cd ~/py-frame
+cd ~/piframe
 git pull --ff-only
-sudo systemctl restart py-frame.service
+sudo systemctl restart piframe.service
 ```
 `git pull --ff-only` always fetches the exact latest commit (unlike curling the raw files,
 which can briefly serve a stale cached copy right after a push), and updates every file in one
@@ -128,7 +122,7 @@ instead, so you notice and can decide how to reconcile it.
 * Click Shared Folder on the NFS settings page.
 * Right-click on `photo` folder, choose `Edit` and go to `NFS Permissions`.
 * Create a rule:
-  * Hostname or IP: rpi
+  * Hostname or IP: piframe
   * Privilege: Read only
   * Squash: Map all users to admin (admin must have access to `photo`; see below)
   * Security: sys
@@ -136,6 +130,12 @@ instead, so you notice and can decide how to reconcile it.
   * The rest of the settings might be not needed, but I set them too. 
 
 ![NFS Permissions](./pictures/nfs-perms.jpg)
+
+Using the Pi's hostname here (rather than its IP) means this rule survives a DHCP lease
+change. It does NOT survive the Pi's hostname itself changing, though -- if you ever rename
+the Pi again, update this rule to match in the same sitting, or every file read will start
+failing with `Permission denied` (the exact class of outage this hostname-based rule was
+put in place to avoid; see the Troubleshooting section below for the full symptom pattern).
 
 ### Make sure `admin` can access the shared folder
 
@@ -235,13 +235,13 @@ both `photo.xxx.list` and `exclusions.txt`. This means that we need to map `nasu
 folder inside the target folder.
 
 ```
-ln -s /mnt/nasus ~/py-frame/nasus
+ln -s /mnt/nasus ~/piframe/nasus
 ```
 
 Check that it is mapped correctly:
 
 ```
-ls -l ~/py-frame
+ls -l ~/piframe
 ```
 
 You should see:
@@ -251,7 +251,7 @@ lrwxrwxrwx 1 pi pi      10 Dec 12 16:13 nasus -> /mnt/nasus
 
 Check that photos are accessible:
 ```
-ls -l ~/py-frame/nasus/photo
+ls -l ~/piframe/nasus/photo
 ```
 
 You should see something like:
@@ -283,10 +283,10 @@ The list is read from `photo.list` file.
 ## Make slideshow start on RPi boot
 
 ### Step 1
-Create file py-frame.service:
+Create file piframe.service:
 
 ```
-sudo nano /etc/systemd/system/py-frame.service
+sudo nano /etc/systemd/system/piframe.service
 ```
 
 with this content:
@@ -300,8 +300,8 @@ Conflicts=getty@tty1.service
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/py-frame
-ExecStart=/usr/bin/python /home/pi/py-frame/py_frame.py /home/pi/py-frame/photo.list
+WorkingDirectory=/home/pi/piframe
+ExecStart=/usr/bin/python /home/pi/piframe/piframe.py /home/pi/piframe/photo.list
 
 # Bind the service to the main console (tty1)
 StandardInput=tty
@@ -332,7 +332,7 @@ sudo systemctl disable getty@tty1.service
 
 ### Step 3
 ```
-sudo systemctl enable py-frame.service
+sudo systemctl enable piframe.service
 ```
 Reboot to check if slideshow starts on boot.
 
@@ -341,23 +341,45 @@ reboot
 ```
 
 ### Useful commands
-After changing `py-frame.service` reload it:
+After changing `piframe.service` reload it:
 ```
 sudo systemctl daemon-reload
 ```
 
 To start/stop the service:
 ```
-sudo systemctl start py-frame.service
-sudo systemctl stop  py-frame.service
+sudo systemctl start piframe.service
+sudo systemctl stop  piframe.service
 ```
 
 Get status:
 ```
-sudo systemctl status py-frame.service --no-pager
+sudo systemctl status piframe.service --no-pager
 ```
 
 # Troubleshooting
+
+## Every photo fails to load with "Permission denied" (NFS rule mismatch)
+
+Symptom: the frame freezes on the last photo with `Drive: DISCONNECTED`, and
+`journalctl -u piframe.service` shows a `PermissionError: [Errno 13] Permission denied` for
+every single file, not just some -- even `sudo ls -ld /mnt/nasus/photo` on the Pi itself fails
+the same way. This isn't a local permissions problem (root failing too rules that out); it
+means the NAS's NFS export rule for `photo` (`Control Panel → Shared Folder → photo → Edit →
+NFS Permissions`) no longer matches this client.
+
+The rule is keyed off the Pi's hostname or IP (see the setup section above). If it was set to
+an IP and the Pi's DHCP lease changed, or if the Pi's hostname itself changed and the rule
+wasn't updated to match, the NAS now sees requests from a client it doesn't recognize and
+denies everything. Fix: update the rule's `Hostname or IP` field to the Pi's current
+hostname, then on the Pi:
+```bash
+sudo umount -f /mnt/nasus/photo
+sudo systemctl restart nasus-photo-mount.service
+ls ~/piframe/nasus/photo
+```
+Using the hostname (not the IP) makes this immune to future DHCP lease changes, but it still
+needs to be kept in sync any time the Pi itself is renamed.
 
 ## Fix intermittent WiFi drops by pinning to a specific band (e.g. 2.4GHz)
 

@@ -7,7 +7,7 @@ import time
 import pytest
 import pygame
 from web_server import create_app, _parse_int_field, build_state_payload
-from py_frame import SlideshowController, Slide
+from piframe import SlideshowController, Slide
 
 
 class TestWebServer:

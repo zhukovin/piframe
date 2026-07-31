@@ -1,6 +1,6 @@
 """
-Comprehensive test suite for py_frame.py
-This file extracts and runs existing tests from py_frame.py
+Comprehensive test suite for piframe.py
+This file extracts and runs existing tests from piframe.py
 """
 import pytest
 from collections import deque
@@ -15,10 +15,10 @@ import threading
 from unittest.mock import Mock, MagicMock, patch
 from PIL import Image
 
-import py_frame
+import piframe
 
-# Import the test function and dependencies from py_frame
-from py_frame import (
+# Import the test function and dependencies from piframe
+from piframe import (
     Slide,
     SlideshowController,
     classify_pattern_type,
@@ -66,7 +66,7 @@ class DummySlide(Slide):
 
 def reset_exclusion_icon_cache():
     """
-    py_frame's exclusion-icon loader caches module-level state meant to
+    piframe's exclusion-icon loader caches module-level state meant to
     persist for the life of the real process (loaded once, never torn
     down). Tests that pygame.init()/quit() repeatedly across classes need
     to reset it in setup_method (not just teardown_method) or a later
@@ -75,10 +75,10 @@ def reset_exclusion_icon_cache():
     failure in TestRenderPatternMarking that only reproduced when run
     after another class exercising the same icon.
     """
-    import py_frame
-    py_frame._exclusion_icon_original = None
-    py_frame._exclusion_icon_load_attempted = False
-    py_frame._exclusion_icon_scaled_cache = {}
+    import piframe
+    piframe._exclusion_icon_original = None
+    piframe._exclusion_icon_load_attempted = False
+    piframe._exclusion_icon_scaled_cache = {}
 
 
 def test_extract_pattern_all_len5():
@@ -788,9 +788,9 @@ class TestDrawExclusionOverlay:
         assert corner == (10, 20, 30)
 
     def test_missing_icon_file_does_not_raise(self):
-        import py_frame
-        original_path = py_frame.EXCLUSION_ICON_PATH
-        py_frame.EXCLUSION_ICON_PATH = "pictures/does-not-exist.jpeg"
+        import piframe
+        original_path = piframe.EXCLUSION_ICON_PATH
+        piframe.EXCLUSION_ICON_PATH = "pictures/does-not-exist.jpeg"
         try:
             screen = pygame.Surface((300, 300))
             screen.fill((10, 20, 30))
@@ -800,7 +800,7 @@ class TestDrawExclusionOverlay:
 
             assert screen.get_at((rect.centerx, rect.centery))[:3] == (10, 20, 30)
         finally:
-            py_frame.EXCLUSION_ICON_PATH = original_path
+            piframe.EXCLUSION_ICON_PATH = original_path
 
     def test_tiny_rect_does_not_raise(self):
         screen = pygame.Surface((10, 10))
@@ -1079,7 +1079,7 @@ class TestLoadDisplayConfig:
 
     def setup_method(self):
         self.temp_dir = tempfile.mkdtemp()
-        self.config_path = os.path.join(self.temp_dir, "py-frame.conf")
+        self.config_path = os.path.join(self.temp_dir, "piframe.conf")
 
     def teardown_method(self):
         import shutil
@@ -1593,8 +1593,8 @@ class TestSetupLogging:
         self.prev_level = self.root_logger.level
         self.prev_sys_excepthook = sys.excepthook
         self.prev_thread_excepthook = threading.excepthook
-        self.prev_configured = py_frame._logging_configured
-        py_frame._logging_configured = False
+        self.prev_configured = piframe._logging_configured
+        piframe._logging_configured = False
 
     def teardown_method(self):
         for h in list(self.root_logger.handlers):
@@ -1603,7 +1603,7 @@ class TestSetupLogging:
         self.root_logger.setLevel(self.prev_level)
         sys.excepthook = self.prev_sys_excepthook
         threading.excepthook = self.prev_thread_excepthook
-        py_frame._logging_configured = self.prev_configured
+        piframe._logging_configured = self.prev_configured
 
         import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -1611,13 +1611,13 @@ class TestSetupLogging:
     def test_logged_exception_appears_in_the_file(self):
         """Test that logger.error(..., exc_info=True) anywhere in the app
         ends up in the log file with a full traceback"""
-        with patch("py_frame.ERROR_LOG_FILE", self.log_file):
+        with patch("piframe.ERROR_LOG_FILE", self.log_file):
             setup_logging()
 
         try:
             raise ValueError("boom")
         except ValueError:
-            logging.getLogger("py_frame").error("something failed", exc_info=True)
+            logging.getLogger("piframe").error("something failed", exc_info=True)
 
         with open(self.log_file) as f:
             content = f.read()
@@ -1628,7 +1628,7 @@ class TestSetupLogging:
     def test_is_idempotent(self):
         """Test that calling setup_logging twice doesn't add duplicate
         handlers (e.g. across multiple test runs in the same process)"""
-        with patch("py_frame.ERROR_LOG_FILE", self.log_file):
+        with patch("piframe.ERROR_LOG_FILE", self.log_file):
             setup_logging()
             handlers_after_first = len(self.root_logger.handlers)
             setup_logging()
@@ -1639,7 +1639,7 @@ class TestSetupLogging:
     def test_uncaught_thread_exception_is_logged(self):
         """Test that an uncaught exception in a background thread is
         logged via threading.excepthook, not just silently printed"""
-        with patch("py_frame.ERROR_LOG_FILE", self.log_file):
+        with patch("piframe.ERROR_LOG_FILE", self.log_file):
             setup_logging()
 
         def boom():
@@ -1676,8 +1676,8 @@ class TestMainEmptyFileList:
         # setup_logging() has real side effects (creates a log file in the
         # cwd, mutates sys.excepthook/threading.excepthook) that are
         # irrelevant to this test and would otherwise leak into the repo.
-        with patch("py_frame.setup_logging"):
-            with patch("sys.argv", ["py_frame.py", self.list_path]):
+        with patch("piframe.setup_logging"):
+            with patch("sys.argv", ["piframe.py", self.list_path]):
                 with pytest.raises(SystemExit) as exc_info:
                     main()
 
@@ -1776,7 +1776,7 @@ class TestImageFetcherThreadThrottling:
         self.controller.drive_ok = True
         self.controller.download_bytes_per_sec = 123.0
 
-        with patch("py_frame.load_slide", side_effect=ConnectionResetError("simulated reset")):
+        with patch("piframe.load_slide", side_effect=ConnectionResetError("simulated reset")):
             self._run_with_bounded_sleep(["irrelevant-path.jpg"])
 
         assert self.controller.drive_ok is False

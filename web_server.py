@@ -6,11 +6,11 @@ from typing import TYPE_CHECKING
 from flask import Flask, Response, request, jsonify, send_file
 
 if TYPE_CHECKING:
-    from py_frame import SlideshowController  # adjust import
+    from piframe import SlideshowController  # adjust import
 
-# Must match py_frame.EXCLUSION_ICON_PATH (kept as a separate literal here,
-# rather than importing it, to avoid a circular import with py_frame --
-# py_frame imports run_web from this module at load time).
+# Must match piframe.EXCLUSION_ICON_PATH (kept as a separate literal here,
+# rather than importing it, to avoid a circular import with piframe --
+# piframe imports run_web from this module at load time).
 EXCLUSION_ICON_PATH = "pictures/eye-dont-show.png"
 
 
@@ -89,7 +89,7 @@ def create_app(controller: "SlideshowController") -> Flask:
             return jsonify({"ok": False, "error": "missing path"}), 400
 
         # render_loop is the only thread that ever touches pygame/SDL
-        # surfaces (see update_thumbnail_cache in py_frame.py) -- this
+        # surfaces (see update_thumbnail_cache in piframe.py) -- this
         # route just reads bytes it already encoded, so there's no pygame
         # call here at all, and no cross-thread SDL risk.
         with controller.lock:
@@ -107,7 +107,7 @@ def create_app(controller: "SlideshowController") -> Flask:
     @app.route("/api/exclusion-icon")
     def api_exclusion_icon():
         # Same icon drawn over a marked photo on the physical screen (see
-        # draw_exclusion_overlay in py_frame.py), served as-is for the web
+        # draw_exclusion_overlay in piframe.py), served as-is for the web
         # UI to overlay on marked tiles too.
         try:
             return send_file(EXCLUSION_ICON_PATH, mimetype="image/png")
@@ -382,7 +382,7 @@ function tickAdvanceBar() {
 
 setInterval(tickAdvanceBar, 200);
 
-// Mirrors compute_pattern_rects() in py_frame.py so the web UI grid
+// Mirrors compute_pattern_rects() in piframe.py so the web UI grid
 // matches the physical screen's arrangement: which columns/rows each
 // slide occupies for a given pattern_type. pattern_type 2/3 group
 // slides by orientation (all L's, then all P's) rather than using
@@ -470,7 +470,7 @@ function renderState(data) {
   grid.style.gridTemplateColumns = `repeat(${layout.columns}, 1fr)`;
   grid.style.gridTemplateRows = `repeat(${layout.rows}, 1fr)`;
 
-  // layoutTiles() builds `tiles` in the same order py_frame.py's
+  // layoutTiles() builds `tiles` in the same order piframe.py's
   // compute_pattern_rects() builds its rects list (grouped by orientation
   // for the PPLLL/PLLL patterns) -- number badges by *position in this
   // array*, not by slide.index (raw current_slides order), so the number

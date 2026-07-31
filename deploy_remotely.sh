@@ -5,7 +5,7 @@
 # over the SSH session if needed.
 set -e
 
-PI_HOST="pi@rpi"
-PI_DIR="~/py-frame"
+PI_HOST="pi@piframe"
+PI_DIR="~/piframe"
 
 ssh -t "$PI_HOST" "cd $PI_DIR && ./deploy.sh"

@@ -20,7 +20,7 @@ import logging
 
 faulthandler.register(signal.SIGUSR1)
 
-logger = logging.getLogger("py_frame")
+logger = logging.getLogger("piframe")
 
 ERROR_LOG_FILE = "app_errors.log"
 
@@ -48,7 +48,7 @@ def setup_logging():
     (main, image fetcher, Flask's web server) -- ends up in ERROR_LOG_FILE
     for later analysis, in addition to the usual terminal/journal output.
 
-    Attached to the root logger (not just "py_frame") specifically so
+    Attached to the root logger (not just "piframe") specifically so
     Flask's own app.logger, which propagates to root by default, is
     captured too without needing any changes in web_server.py. Safe to
     call more than once (e.g. across tests) -- only configures once.
@@ -72,7 +72,7 @@ def setup_logging():
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
 
-    uncaught_logger = logging.getLogger("py_frame.uncaught")
+    uncaught_logger = logging.getLogger("piframe.uncaught")
 
     def log_uncaught_main_exception(exc_type, exc_value, exc_traceback):
         if issubclass(exc_type, KeyboardInterrupt):
@@ -1030,7 +1030,7 @@ def load_exclusions(controller: SlideshowController):
                 controller.excluded_paths.add(path)
 
 
-CONFIG_FILE = "py-frame.conf"
+CONFIG_FILE = "piframe.conf"
 DEFAULT_NIGHT_START = (22, 0)
 DEFAULT_NIGHT_END = (7, 0)
 DEFAULT_SHUFFLE = True
@@ -1324,7 +1324,7 @@ def render_loop(
     while running:
         now = time.time()
 
-        # --- Time-based schedule (configured via py-frame.conf) => screen off ---
+        # --- Time-based schedule (configured via piframe.conf) => screen off ---
         lt = time.localtime(now)
         is_night = is_within_night_window(lt.tm_hour, lt.tm_min, night_start, night_end)
 
