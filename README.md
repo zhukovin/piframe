@@ -33,7 +33,7 @@ open htmlcov/index.html
 ## How to use the photo frame
 On your mobile device open this in your browser to control the slideshow:
 ```
-http://piframe:7654
+http://piframe
 ```
 If you see a photo that you would rather skip next time, mark it (each slot shows a thumbnail
 so you can tell them apart) and hit Unmark to undo. A mark takes effect immediately, but only
@@ -302,6 +302,13 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/piframe
 ExecStart=/usr/bin/python /home/pi/piframe/piframe.py /home/pi/piframe/photo.list
+
+# The web UI binds port 80 (so it's reachable as http://piframe with no
+# port number) -- that's a privileged port on Linux, off-limits to a
+# non-root user by default. These two lines grant just the one specific
+# capability needed to bind it, without running the whole process as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 # Bind the service to the main console (tty1)
 StandardInput=tty

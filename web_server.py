@@ -774,5 +774,7 @@ def run_web(controller: "SlideshowController"):
     print("Web server thread native_id:", threading.get_native_id())
 
     app = create_app(controller)
-    # host=0.0.0.0 so phones on LAN can reach it
-    app.run(host="0.0.0.0", port=7654, threaded=True)
+    # host=0.0.0.0 so phones on LAN can reach it. Port 80 is a privileged
+    # port on Linux -- the systemd unit grants CAP_NET_BIND_SERVICE so this
+    # can bind it without running the whole process as root (see README).
+    app.run(host="0.0.0.0", port=80, threaded=True)
