@@ -128,8 +128,7 @@ instead, so you notice and can decide how to reconcile it.
 * Click Shared Folder on the NFS settings page.
 * Right-click on `photo` folder, choose `Edit` and go to `NFS Permissions`.
 * Create a rule:
-  * Hostname or IP: 192.168.1.201 (also try using `rpi` host name) -
-     this is your RPi's IP.
+  * Hostname or IP: rpi
   * Privilege: Read only
   * Squash: Map all users to admin (admin must have access to `photo`; see below)
   * Security: sys
