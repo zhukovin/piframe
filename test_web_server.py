@@ -198,6 +198,20 @@ class TestWebServer:
         assert data['ok'] is False
         assert self.controller.pending_exclusions == set()
 
+    def test_api_mark_stale_and_wrong_path_responses_both_include_current_version(self):
+        """Both 409 cases echo current_version, so the client's automatic
+        retry-once-on-409 (using the server's authoritative version) has
+        something to retry with in either case"""
+        self._add_current_slides(2)
+
+        version_response = self._mark(0, "test0.jpg", expected_version=999)
+        assert version_response.status_code == 409
+        assert version_response.get_json()['current_version'] == self.controller.state_version
+
+        path_response = self._mark(0, "not-actually-there.jpg")
+        assert path_response.status_code == 409
+        assert path_response.get_json()['current_version'] == self.controller.state_version
+
     def test_api_mark_invalid_slot_negative(self):
         """Test /api/mark with invalid negative slot"""
         self._add_current_slides(1)

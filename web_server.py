@@ -138,7 +138,11 @@ def create_app(controller: "SlideshowController") -> Flask:
 
             actual_path = controller.current_slides[slot].path
             if path != actual_path:
-                return jsonify({"ok": False, "error": "stale"}), 409
+                return jsonify({
+                    "ok": False,
+                    "error": "stale",
+                    "current_version": controller.state_version,
+                }), 409
 
             if actual_path in controller.pending_exclusions:
                 controller.pending_exclusions.discard(actual_path)
@@ -555,10 +559,13 @@ const LONG_PRESS_MS = 550;
 // rather than a native click listener, since ordering a click handler
 // against a synthetic touch-then-click sequence is unreliable -- this
 // way onTap only ever fires from a genuinely short, unmoved press.
+const TAP_DEBOUNCE_MS = 400;
+
 function attachTapHandlers(el, onTap, onLongPress) {
   let timer = null;
   let firedLongPress = false;
   let moved = false;
+  let lastTapAt = 0;
 
   function start() {
     // Touch devices often fire a synthetic mousedown shortly after
@@ -606,6 +613,17 @@ function attachTapHandlers(el, onTap, onLongPress) {
     const wasLongPress = firedLongPress;
     clearTimer();
     if (!wasLongPress && !moved) {
+      // Second, independent line of defense against the same double-fire
+      // preventDefault() above is meant to stop: some Android Chrome/
+      // WebView versions don't reliably honor it, so this doesn't rely on
+      // the browser's behavior at all -- it just refuses to fire onTap()
+      // again for this element within TAP_DEBOUNCE_MS of the last time,
+      // regardless of whether the trigger was touch or synthetic mouse.
+      const now = Date.now();
+      if (now - lastTapAt < TAP_DEBOUNCE_MS) {
+        return;
+      }
+      lastTapAt = now;
       onTap();
     }
   }
@@ -671,12 +689,36 @@ function flashStatus(message) {
   }, 1500);
 }
 
-async function toggleMark(slot, path) {
-  const res = await fetch('/api/mark', {
+async function postMark(slot, path) {
+  return fetch('/api/mark', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({slot, path, expected_version: latestVersion})
   });
+}
+
+async function toggleMark(slot, path) {
+  let res = await postMark(slot, path);
+
+  if (res.status === 409) {
+    // latestVersion only updates on our own mark responses and on SSE
+    // pushes, both of which have some lag (e.g. a Prev navigation is
+    // processed by render_loop asynchronously, so there's a real window
+    // between pressing Prev and the resulting SSE push landing). A tap
+    // during that window guesses wrong. Rather than just failing (the
+    // tap would silently do nothing), retry once with the version the
+    // server just told us is correct -- its own path check still
+    // protects against marking the wrong photo if the slide genuinely
+    // changed underneath, so this is safe either way: if the slide is
+    // still the same one, the retry succeeds transparently; if not, it
+    // fails again for a real reason instead of a stale guess.
+    const errData = await res.json();
+    if (typeof errData.current_version === 'number') {
+      latestVersion = errData.current_version;
+      res = await postMark(slot, path);
+    }
+  }
+
   if (res.status === 409) {
     flashStatus('Screen changed — try again');
   } else if (res.ok) {
