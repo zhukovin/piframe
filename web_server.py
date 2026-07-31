@@ -154,8 +154,15 @@ def create_app(controller: "SlideshowController") -> Flask:
                 marked = True
 
             controller.bump_version()
+            new_version = controller.state_version
 
-        return jsonify({"ok": True, "marked": marked})
+        # Echo the version this mark just produced, so the client can
+        # advance its own latestVersion right away instead of waiting for
+        # the next SSE push to learn about the change it just made itself
+        # -- without this, a second quick mark/unmark race against SSE's
+        # round-trip latency and gets rejected as "stale" even though
+        # nothing about the screen actually changed underneath it.
+        return jsonify({"ok": True, "marked": marked, "version": new_version})
 
     @app.route("/api/command", methods=["POST"])
     def api_command():
@@ -660,6 +667,16 @@ async function toggleMark(slot, path) {
   });
   if (res.status === 409) {
     flashStatus('Screen changed — try again');
+  } else if (res.ok) {
+    // Advance latestVersion from this response immediately, rather than
+    // waiting for the next SSE push to report the change back -- closes
+    // the round-trip race where a quick second mark/unmark would
+    // otherwise arrive with an already-stale expected_version and get
+    // wrongly rejected, even though the screen itself never changed.
+    const data = await res.json();
+    if (typeof data.version === 'number') {
+      latestVersion = data.version;
+    }
   }
 }
 

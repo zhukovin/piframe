@@ -117,6 +117,42 @@ class TestWebServer:
         assert "test1.jpg" not in self.controller.pending_exclusions
         assert "test1.jpg" not in self.controller.excluded_paths
 
+    def test_api_mark_response_includes_new_version(self):
+        """Test that a successful /api/mark echoes the version it just
+        produced, so the client can advance its own tracked version
+        immediately instead of waiting for the next SSE push"""
+        self._add_current_slides(1)
+        version_before = self.controller.state_version
+
+        response = self._mark(0, "test0.jpg")
+
+        data = response.get_json()
+        assert 'version' in data
+        assert data['version'] == self.controller.state_version
+        assert data['version'] != version_before
+
+    def test_api_mark_rapid_successive_marks_do_not_race_against_sse(self):
+        """Regression test: marking a photo bumps state_version, but the
+        client's cached latestVersion only used to update on the next SSE
+        push (network round-trip). A second mark/unmark fired before that
+        push arrived would see an already-stale expected_version and get
+        rejected as 409, even though nothing about the screen actually
+        changed -- reported live as a false "Screen changed" error while
+        paused and just clicking marks in quick succession. Simulates the
+        client now updating latestVersion from each mark response
+        directly (see toggleMark in the page JS) rather than from SSE."""
+        self._add_current_slides(2)
+
+        r1 = self._mark(0, "test0.jpg")
+        assert r1.status_code == 200
+        version_after_r1 = r1.get_json()['version']
+
+        # Second mark uses the version echoed by the FIRST response (what
+        # the client's updated JS does), not a version re-read from SSE.
+        r2 = self._mark(1, "test1.jpg", expected_version=version_after_r1)
+        assert r2.status_code == 200
+        assert r2.get_json()['marked'] is True
+
     def test_api_mark_pauses_on_fresh_mark(self):
         """Marking a photo should pause the slideshow so the screen
         doesn't change out from under the user mid-review; they resume
