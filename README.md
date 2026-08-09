@@ -93,7 +93,10 @@ git clone https://github.com/zhukovin/piframe.git ~/piframe
 cd ~/piframe
 ```
 
-No SSH keys or GitHub auth needed — the repo is public and the RPi only ever pulls, never pushes.
+No SSH keys or GitHub auth needed for this clone step — the repo is public.
+
+However, an SSH key with push access is needed for the daily `exclusions.txt`
+auto-sync (see below), so the RPi does end up pushing, not just pulling.
 
 ### Updating the code later
 ```
@@ -362,6 +365,29 @@ sudo systemctl stop  piframe.service
 Get status:
 ```
 sudo systemctl status piframe.service --no-pager
+```
+
+## Auto-commit and push `exclusions.txt` daily
+
+The running app appends to `exclusions.txt` on the RPi as photos get marked, but
+never commits or pushes those changes itself. `sync_exclusions.sh` (in this repo)
+commits and pushes the file if it changed, and is meant to run daily via cron on
+the RPi:
+
+```
+crontab -e
+```
+
+Add:
+```
+0 3 * * * cd ~/piframe && ./sync_exclusions.sh >> ~/piframe/sync_exclusions.log 2>&1
+```
+
+This needs an SSH key on the RPi that has push access to the repo (`ssh -T
+git@github.com` should greet you by username), and the remote set to the SSH
+URL rather than HTTPS:
+```
+git remote set-url origin git@github.com:zhukovin/piframe.git
 ```
 
 # Troubleshooting
