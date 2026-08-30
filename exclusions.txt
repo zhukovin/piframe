@@ -854,3 +854,7 @@ nasus/photo/Camera Media/Camera Irina/2020/20211103_135936.jpg
 nasus/photo/2004/2004-12-04 Пикник на Наташин ДР/PC050547.JPG
 nasus/photo/Camera Media/Camera Irina/2018/20181224_082619.jpg
 nasus/photo/Camera Media/Camera Alexey/2014/20141226_141738.jpg
+nasus/photo/2013/2013-06 Черногория (Samsung S3)/20130625_103524.jpg
+nasus/photo/Camera Media/Camera Irina/2019/20190704_191445.jpg
+nasus/photo/Assorted/Art Collection/Logos/fcc81700bc28c91d.jpg
+nasus/photo/2007/2007-04-07/IMAGE_072.jpg
