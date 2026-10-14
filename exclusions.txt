@@ -870,3 +870,5 @@ nasus/photo/2003/2003-08-03 Max Birth/P8030104.JPG
 nasus/photo/2007/2007-11-23/P1010036.JPG
 nasus/photo/Assorted/Art Collection/Leonardo da Vinci/Img/002272.jpg
 nasus/photo/Assorted/Art Collection/Мастер и Маргарита/Фото-проект «Мастер и Маргарита» - Фишки.нет_files/387373.jpg
+nasus/photo/2004/2004-11-25 Офис НКТ/PB250361.JPG
+nasus/photo/Assorted/Art Collection/Toys from childhood/comment.php_files/widget_comments_data/e_4d6eb41b.jpg
