@@ -16,6 +16,7 @@ import signal
 import resource
 import os
 import logging
+from datetime import datetime
 
 
 faulthandler.register(signal.SIGUSR1)
@@ -23,6 +24,7 @@ faulthandler.register(signal.SIGUSR1)
 logger = logging.getLogger("piframe")
 
 ERROR_LOG_FILE = "app_errors.log"
+SHUFFLE_ORDER_FILE = "shuffle_order.log"
 
 Orientation = Literal["P", "L"]  # P = Portrait, L = Landscape
 
@@ -1754,6 +1756,15 @@ def main():
     if not file_paths:
         print(f"No .jpg/.jpeg entries found in {list_path}; nothing to display.")
         sys.exit(1)
+
+    with open(SHUFFLE_ORDER_FILE, "a") as f:
+        f.write(f"# {datetime.now().isoformat()} shuffle={shuffle_enabled} count={len(file_paths)}\n")
+        for p in file_paths:
+            f.write(p + "\n")
+    logger.info(
+        f"Wrote startup display order ({len(file_paths)} photos, shuffle={shuffle_enabled}) "
+        f"to {SHUFFLE_ORDER_FILE}"
+    )
 
     shared_deque: deque[Slide] = deque()
     lock = threading.Lock()
