@@ -16,6 +16,7 @@ import signal
 import resource
 import os
 import logging
+import gc
 from datetime import datetime
 
 
@@ -35,9 +36,40 @@ MAX_HISTORY_SCREENS = 5  # or 20, tune as you like
 THUMBNAIL_WIDTH = 160  # px, for the web UI's per-slide preview images
 
 
+_mem_log_calls = 0
+
+
 def log_mem(tag=""):
+    """
+    Called once per screen advance. Was print()-only, which goes to the
+    service's tty (piframe.service sets StandardOutput=tty) and is
+    invisible to anyone not physically at the console -- routed through
+    logger.info too now so it lands in ERROR_LOG_FILE / journalctl, needed
+    to track down a recurring OOM-kill (see journalctl -u piframe.service
+    for "status=9/KILL", recurring every few days to weeks since at least
+    2026-08-07).
+
+    ru_maxrss is in KB on Linux (the field is labeled B in bytes on some
+    BSDs, hence the correction here).
+
+    The gc object/type scan is expensive on a Pi, so it only runs every
+    20th call (~5 min at the normal 15s/screen rate) -- enough resolution
+    to see a leak's growth curve without slowing down every single advance.
+    """
+    global _mem_log_calls
+    _mem_log_calls += 1
+
     usage = resource.getrusage(resource.RUSAGE_SELF)
-    print(f"[MEM {tag}] pid={os.getpid()} rss={usage.ru_maxrss} B")
+    msg = f"[MEM {tag}] pid={os.getpid()} rss_kb={usage.ru_maxrss}"
+
+    if _mem_log_calls % 20 == 0:
+        objects = gc.get_objects()
+        surfaces = sum(1 for o in objects if isinstance(o, pygame.Surface))
+        pil_images = sum(1 for o in objects if isinstance(o, Image.Image))
+        msg += f" gc_objects={len(objects)} surfaces={surfaces} pil_images={pil_images}"
+
+    print(msg)
+    logger.info(msg)
 
 
 _logging_configured = False
