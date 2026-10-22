@@ -876,3 +876,7 @@ nasus/photo/Assorted/Art Collection/Fantasy/00107.jpg
 nasus/photo/Assorted/Art Collection/Leonardo da Vinci/Img/001693.jpg
 nasus/photo/Camera Media/Camera Irina/2023/20231021_162746.jpg
 nasus/photo/Assorted/Art Collection/CCCP/poster-08-6.jpg
+nasus/photo/Assorted/Art Collection/004_avto_20_let.jpg
+nasus/photo/2012/2012-07-26/IMG_2598.JPG
+nasus/photo/Assorted/Art Collection/Ретрофото/066.jpg
+nasus/photo/Camera Media/Camera Alexey/2020/IMG_20200131_193236.jpg
