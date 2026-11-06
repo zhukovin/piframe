@@ -886,3 +886,7 @@ nasus/photo/Assorted/Art Collection/Toys from childhood/comment.php_files/widget
 nasus/photo/Camera Media/Camera Alexey/2018/IMG_20180121_193716.jpg
 nasus/photo/Assorted/Art Collection/Toys from childhood/comment.php_files/tn.jpg
 nasus/photo/Camera Media/Camera Irina/2026/20260502_225613.jpg
+nasus/photo/Camera Media/Camera Irina/2021/20210519_153934.jpg
+nasus/photo/Camera Media/Camera Irina/2019/20190214_115234.jpg
+nasus/photo/Camera Media/Camera Alexey/2019/WhatsApp Images/IMG-20190815-WA0000.jpg
+nasus/photo/2007/2007-11-23/P1010035.JPG
